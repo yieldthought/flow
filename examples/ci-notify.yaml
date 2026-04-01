@@ -1,0 +1,35 @@
+flow:
+  name: ci-notify
+  args:
+    run_url:
+      help: GitHub Actions run URL
+
+check:
+  thinking: low
+  start: true
+  prompt: |
+    Inspect the CI run at {{run_url}}.
+  transitions:
+    - if: still running
+      wait: 10m
+      go: check
+    - if: passed
+      go: notify-pass
+    - if: failed
+      go: investigate
+
+notify-pass:
+  prompt: |
+    Send a success notification via pushover naming the run.
+  transitions:
+    - go: done
+
+investigate:
+  thinking: xhigh
+  prompt: |
+    Investigate the failure and send a very concise report via pushover.
+  transitions:
+    - go: done
+
+done:
+  end: true

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flow-like-a-river"
+version = "0.1.0"
+description = "Flow-driven CLI runtime for Codex agent sessions."
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["agent", "codex", "cli", "workflow", "flowchart", "tmux"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development",
+]
+dependencies = [
+  "PyYAML>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yieldthought/flow"
+Repository = "https://github.com/yieldthought/flow"
+Issues = "https://github.com/yieldthought/flow/issues"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "pytest>=8.0",
+  "twine>=5.0",
+]
+
+[project.scripts]
+flow = "flow.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

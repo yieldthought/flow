@@ -1,0 +1,35 @@
+flow:
+  name: agi-watcher
+  mode: read-only
+  args:
+    site:
+      help: news site to monitor
+  
+check-news:
+  start: true
+  thinking: low
+  prompt: Check {{site}} to see if there's a story about AGI being achieved
+  transitions:
+    - if: there is news that AGI has been acheived
+      go: investigate
+    - if: there are no stories about AGI being achieved
+      wait: 60m
+      go: check-news
+
+investigate:
+  thinking: xhigh
+  prompt: |
+    Read the article, comments and any sources you can find.
+    Decide whether AGI really has been achieved or if this is just hype.
+  transitions:
+    - if: AGI really has been acheived
+      go: its-over
+    - if: AGI has probably not been achieved
+      go: check-news
+
+its-over:
+  mode: yolo
+  prompt: |
+    Use pushover to send the user a short summary of the situation.
+    Then send another reminding them to go outside, lie on the grass and enjoy the sun.
+  end: true

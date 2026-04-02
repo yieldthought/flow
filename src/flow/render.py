@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from collections import defaultdict
@@ -10,7 +11,18 @@ from typing import Any
 
 from .ansi import PALETTE, bold, color
 from .common import duration_seconds, normalize_phase, parse_utc, utc_now
-from .store import daemon_exit_info, daemon_status, cumulative_agent_seconds, get_meta, list_daemon_events, list_error_events, total_active_seconds, total_agent_count
+from .flowfile import flow_from_dict
+from .store import (
+    cumulative_agent_seconds,
+    daemon_exit_info,
+    daemon_status,
+    get_flow_snapshot,
+    get_meta,
+    list_daemon_events,
+    list_error_events,
+    total_active_seconds,
+    total_agent_count,
+)
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -44,11 +56,14 @@ def render_list(conn: Any, agents: list[dict[str, Any]]) -> str:
     for agent in agents:
         grouped[agent["flow_name"]][agent["current_state"]].append(agent)
     id_width, status_width = _list_column_widths(conn, agents)
+    end_state_map = _list_end_state_map(conn, agents)
 
     for flow_name in sorted(grouped):
         lines.extend(["", bold(color(flow_name, PALETTE.bright, bold=True))])
-        for state_name in sorted(grouped[flow_name]):
-            lines.append(f"  {bold(color(state_name, PALETTE.state, bold=True))}")
+        state_names = sorted(grouped[flow_name], key=lambda name: (end_state_map.get((flow_name, name), False), name))
+        for state_name in state_names:
+            state_color = PALETTE.dim if end_state_map.get((flow_name, state_name), False) else PALETTE.state
+            lines.append(f"  {bold(color(state_name, state_color, bold=True))}")
             state_agents = grouped[flow_name][state_name]
             state_agents.sort(key=lambda item: (item["substate"] == "needs_help", item["substate"] == "interaction", int(item["id"])))
             for agent in state_agents:
@@ -153,10 +168,41 @@ def _list_column_widths(conn: Any, agents: list[dict[str, Any]]) -> tuple[int, i
     return id_width, status_width
 
 
+def _list_end_state_map(conn: Any, agents: list[dict[str, Any]]) -> dict[tuple[str, str], bool]:
+    snapshots: dict[int, Any] = {}
+    state_map: dict[tuple[str, str], bool] = {}
+    for agent in agents:
+        flow_name = str(agent["flow_name"])
+        state_name = str(agent["current_state"])
+        snapshot_id = int(agent["flow_snapshot_id"])
+        flow = snapshots.get(snapshot_id)
+        if flow is None:
+            try:
+                snapshot = get_flow_snapshot(conn, snapshot_id)
+            except ValueError:
+                state_map.setdefault((flow_name, state_name), False)
+                continue
+            flow = flow_from_dict(_parse_snapshot_payload(str(snapshot["snapshot_json"])))
+            snapshots[snapshot_id] = flow
+        state = flow.states.get(state_name)
+        state_map[(flow_name, state_name)] = state_map.get((flow_name, state_name), False) or bool(state and state.end)
+    return state_map
+
+
+def _parse_snapshot_payload(text: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = ast.literal_eval(text)
+    if not isinstance(payload, dict):
+        raise ValueError("flow snapshot payload must decode to a mapping")
+    return payload
+
+
 def _agent_display_fields(conn: Any, agent: dict[str, Any]) -> tuple[str, str, str]:
     agent_id = f"#{agent['id']}"
     if agent["ended_at"]:
-        return agent_id, "elapsed", _format_seconds(duration_seconds(agent["created_at"], agent["ended_at"]))
+        return agent_id, "finished", _format_seconds(duration_seconds(agent["created_at"], agent["ended_at"]))
     if agent["substate"] == "needs_help":
         return agent_id, "needs help", _format_seconds(_state_seconds(conn, agent))
     if agent["substate"] == "interaction":
@@ -182,6 +228,8 @@ def _status_color(status_text: str) -> int:
         return PALETTE.error
     if status_text == "working":
         return PALETTE.info
+    if status_text == "finished":
+        return PALETTE.muted
     return PALETTE.muted
 
 

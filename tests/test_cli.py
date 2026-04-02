@@ -577,6 +577,70 @@ done:
     assert "working 00:00:" in text
 
 
+def test_render_list_puts_end_states_last_and_dims_them(tmp_path: Path, monkeypatch: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr("flow.ansi.ansi_enabled", lambda: True)
+    conn = connect()
+    init_db(conn)
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  path: .
+
+zebra:
+  start: true
+  prompt: hi
+  transitions:
+    - go: alpha
+
+alpha:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(path), {}, cwd_override=str(tmp_path))
+    snapshot_id = record_flow_snapshot(conn, flow, str(flow_to_dict(flow)))
+    active_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="zebra",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    finished_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="zebra",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    conn.execute(
+        "UPDATE agents SET current_state='alpha', phase='finished', ended_at=?, state_entered_at=?, updated_at=? WHERE id=?",
+        (format_utc(utc_now()), format_utc(utc_now()), format_utc(utc_now()), finished_id),
+    )
+    conn.commit()
+
+    text = render_list(conn, [dict(row) for row in conn.execute("SELECT * FROM agents ORDER BY id")])
+    plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+    assert plain.index("  zebra") < plain.index("  alpha")
+    assert f"38;5;{PALETTE.dim}m" in text
+    assert f"#{active_id}" in plain
+    assert f"#{finished_id}" in plain
+
+
 def test_fit_list_top_truncates_with_summary() -> None:
     text = "one\ntwo\nthree\nfour"
     fitted = fit_list_top(text, 3)

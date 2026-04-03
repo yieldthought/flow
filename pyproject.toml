@@ -20,7 +20,9 @@ classifiers = [
   "Topic :: Software Development",
 ]
 dependencies = [
+  "fastapi>=0.115",
   "PyYAML>=6.0",
+  "uvicorn>=0.30",
 ]
 
 [project.urls]
@@ -31,6 +33,7 @@ Issues = "https://github.com/yieldthought/flow/issues"
 [project.optional-dependencies]
 dev = [
   "build>=1.2",
+  "httpx>=0.28",
   "pytest>=8.0",
   "twine>=5.0",
 ]

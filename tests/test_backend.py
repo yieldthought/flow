@@ -7,6 +7,7 @@ from flow.backend import (
     _attach_env,
     _format_agent_args,
     _is_codex_process_name,
+    _looks_like_codex_prompt_ready,
     _looks_like_codex_trust_prompt,
     _looks_like_codex_tui_ready,
     _session_env_unset_names,
@@ -70,6 +71,34 @@ def test_codex_tui_ready_probe_accepts_active_conversation_view() -> None:
     )
 
 
+def test_codex_prompt_ready_probe_accepts_idle_conversation_view() -> None:
+    assert _looks_like_codex_prompt_ready(
+        """
+• {"choice":"notify-pass","reason":"The workflow run completed successfully."}
+
+› Summarize recent commits
+
+  gpt-5.4 low fast · 5h 96% · weekly 95%
+""".strip(),
+        current_command="codex-aarch64-a",
+    )
+
+
+def test_codex_prompt_ready_probe_rejects_trust_prompt() -> None:
+    assert not _looks_like_codex_prompt_ready(
+        """
+> You are in /tmp/agent-flows
+
+  Do you trust the contents of this directory? Working with untrusted contents
+  comes with higher risk of prompt injection.
+
+› 1. Yes, continue
+  2. No, quit
+""".strip(),
+        current_command="codex-aarch64-a",
+    )
+
+
 def test_codex_trust_prompt_probe_detects_workspace_confirmation_screen() -> None:
     assert _looks_like_codex_trust_prompt(
         """
@@ -93,6 +122,28 @@ def test_launch_signature_ignores_thread_resume_suffix() -> None:
 
     assert "resume thread-123" in backend._launch_command(agent)
     assert "resume" not in backend._launch_signature(agent)
+
+
+def test_send_prompt_waits_for_prompt_ready_before_pasting(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    calls: list[list[str]] = []
+    waited: list[str] = []
+
+    monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session: waited.append(session))
+
+    def fake_run_tmux(args: list[str], check: bool = True) -> SimpleNamespace:
+        del check
+        calls.append(list(args))
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(backend, "_run_tmux", fake_run_tmux)
+
+    backend.send_prompt({"tmux_session": "flow-agent-9"}, "hello")
+
+    assert waited == ["flow-agent-9"]
+    assert calls[0][0] == "load-buffer"
+    assert calls[1][:4] == ["paste-buffer", "-d", "-t", "flow-agent-9:0.0"]
+    assert calls[2] == ["send-keys", "-t", "flow-agent-9:0.0", "Enter"]
 
 
 def test_attach_env_unsets_tmux(monkeypatch: object) -> None:

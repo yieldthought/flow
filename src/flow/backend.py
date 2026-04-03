@@ -87,6 +87,7 @@ class CodexBackend(AgentBackend):
 
     def send_prompt(self, agent: dict[str, Any], prompt: str) -> None:
         target = f"{agent['tmux_session']}:0.0"
+        self._wait_for_prompt_ready(agent["tmux_session"])
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             handle.write(prompt)
             buffer_path = handle.name
@@ -354,6 +355,30 @@ class CodexBackend(AgentBackend):
                     return
             time.sleep(0.1)
         raise RuntimeError(f"Codex did not become ready in tmux session '{session}'")
+
+    def _wait_for_prompt_ready(self, session: str, timeout_seconds: float = 15.0) -> None:
+        import time
+
+        deadline = utc_now().timestamp() + timeout_seconds
+        target = f"{session}:0.0"
+        while utc_now().timestamp() < deadline:
+            current = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"],
+                capture_output=True,
+                text=True,
+            )
+            capture = subprocess.run(
+                ["tmux", "capture-pane", "-pt", target, "-S", "-80"],
+                capture_output=True,
+                text=True,
+            )
+            if capture.returncode == 0:
+                text = capture.stdout or ""
+                current_command = (current.stdout or "").strip()
+                if _looks_like_codex_prompt_ready(text, current_command=current_command):
+                    return
+            time.sleep(0.1)
+        raise RuntimeError(f"Codex prompt input did not become ready in tmux session '{session}'")
 
     def _session_has_live_codex(self, session: str) -> bool:
         target = f"{session}:0.0"
@@ -632,4 +657,32 @@ def _looks_like_codex_tui_ready(text: str, *, current_command: str = "") -> bool
             return True
         if any(marker in text for marker in ("› ", "• ", "Run /", "gpt-5.4", "gpt-5", "model:", "directory:")):
             return True
+    return False
+
+
+def _looks_like_codex_prompt_ready(text: str, *, current_command: str = "") -> bool:
+    if not _is_codex_process_name(current_command):
+        return False
+    if _looks_like_codex_trust_prompt(text, current_command=current_command):
+        return False
+
+    if "OpenAI Codex" in text and any(marker in text for marker in ("model:", "directory:", "gpt-5.4", "gpt-5")):
+        return True
+
+    lines = [line.rstrip() for line in text.splitlines()]
+    tail = [line.strip() for line in lines[-14:] if line.strip()]
+    if not tail:
+        return False
+    if not any("gpt-" in line.lower() or "model:" in line.lower() for line in tail):
+        return False
+
+    for line in reversed(tail):
+        if not line.startswith("› "):
+            continue
+        content = line[2:].strip()
+        if not content:
+            return True
+        if content.startswith("[flow-control]"):
+            continue
+        return True
     return False

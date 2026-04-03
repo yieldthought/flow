@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Flow",
+  "version": "0.1.0",
+  "identifier": "com.yieldthought.flow",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 1420",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Flow",
+        "width": 1560,
+        "height": 1040,
+        "minWidth": 1180,
+        "minHeight": 820,
+        "resizable": true
+      }
+    ]
+  }
+}

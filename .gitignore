@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+ui/node_modules/
+ui/dist/
+ui/src-tauri/target/

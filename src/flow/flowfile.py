@@ -198,7 +198,14 @@ def validate_flow(flow: FlowSpec) -> ValidationResult:
 
 
 def render_flow(flow: FlowSpec, values: dict[str, str], cwd_override: str | None = None) -> FlowSpec:
-    args = {name: ArgSpec(spec.name, spec.help, values.get(name, spec.default)) for name, spec in flow.args.items()}
+    args = {
+        name: ArgSpec(
+            spec.name,
+            spec.help,
+            _render_string(spec.default, values) if isinstance(spec.default, str) else spec.default,
+        )
+        for name, spec in flow.args.items()
+    }
     rendered_states = {
         name: StateSpec(
             name=state.name,

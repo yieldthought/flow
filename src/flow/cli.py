@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import select
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ from .store import (
     transaction,
     update_agent,
 )
+from .ui_server import start_ui_server
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser = subparsers.add_parser("show")
     show_parser.add_argument("agent_id")
     show_parser.add_argument("--top", action="store_true")
+
+    ui_parser = subparsers.add_parser("ui")
+    ui_parser.add_argument("flow_name")
 
     for name in ("pause", "interrupt", "resume", "wake", "delete"):
         command = subparsers.add_parser(name)
@@ -106,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     init_db(conn)
     if args.command == "show":
         return cmd_show(conn, int(args.agent_id), top=bool(args.top))
+    if args.command == "ui":
+        return cmd_ui(conn, args.flow_name)
     if args.command == "init":
         return cmd_init(conn)
     if args.command == "restart":
@@ -279,6 +286,41 @@ def cmd_show(conn: Any, agent_id: int, *, top: bool = False) -> int:
 
     print(render_once())
     return 0
+
+
+def cmd_ui(conn: Any, flow_name: str) -> int:
+    rows = [dict(row) for row in list_agents(conn, flow_name)]
+    if not rows:
+        print(f"error: unknown or inactive flow '{flow_name}'", file=sys.stderr)
+        return 1
+
+    ui_dir = Path(__file__).resolve().parents[2] / "ui"
+    package_json = ui_dir / "package.json"
+    if not package_json.exists():
+        print(f"error: UI workspace not found at {ui_dir}", file=sys.stderr)
+        return 1
+    if shutil.which("npm") is None:
+        print("error: npm is required for 'flow ui'", file=sys.stderr)
+        return 1
+
+    handle = start_ui_server()
+    env = dict(os.environ)
+    env["FLOW_UI_API_BASE_URL"] = handle.url
+    env["FLOW_UI_FLOW_NAME"] = flow_name
+    env["VITE_FLOW_UI_API_BASE_URL"] = handle.url
+    env["VITE_FLOW_UI_FLOW_NAME"] = flow_name
+    cargo_bin = str(Path.home() / ".cargo" / "bin")
+    if Path(cargo_bin).exists():
+        env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"
+    command = [
+        "npm",
+        "run",
+        "tauri:dev",
+    ]
+    try:
+        return subprocess.call(command, cwd=ui_dir, env=env)
+    finally:
+        handle.close()
 
 
 def cmd_view(conn: Any, agent_ids: list[str], *, view_all: bool = False) -> int:

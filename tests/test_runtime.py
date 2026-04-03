@@ -641,5 +641,10 @@ done:
     runtime.tick(conn)
 
     agent = dict(get_agent(conn, agent_id))
+    events = [dict(row) for row in list_agent_events(conn, agent_id)]
+    assert agent["substate"] == "needs_help"
+    assert agent["phase"] == "paused"
     assert agent["last_error"] == "codex readiness probe failed"
-    assert agent["status_message"] == "codex readiness probe failed"
+    assert agent["status_message"] == "Needs help"
+    assert events[-1]["kind"] == "needs_help"
+    assert events[-1]["reason"] == "codex readiness probe failed"

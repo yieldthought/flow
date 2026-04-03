@@ -205,6 +205,26 @@ def test_main_list_migrates_legacy_db_without_daemon_events(tmp_path: Path, monk
     assert "daemon_events" in tables
 
 
+def test_cmd_list_succeeds_while_writer_holds_lock(tmp_path: Path, monkeypatch: object, capsys: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    writer = connect()
+    init_db(writer)
+    reader = connect()
+    reader.execute("PRAGMA busy_timeout=1")
+
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        init_db(reader)
+        assert cmd_list(reader, None) == 0
+    finally:
+        if writer.in_transaction:
+            writer.rollback()
+        reader.close()
+        writer.close()
+
+    assert "Runtime" in capsys.readouterr().out
+
+
 def test_cmd_view_single_agent_uses_direct_attach(tmp_path: Path, monkeypatch: object) -> None:
     conn = connect(tmp_path / "runtime.sqlite3")
     init_db(conn)

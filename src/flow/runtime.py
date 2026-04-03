@@ -118,26 +118,14 @@ class Runtime:
                     self._tick_agent(conn, agent)
                 except Exception as exc:  # pragma: no cover - defensive runtime guard
                     details = traceback.format_exc().rstrip()
+                    self._enter_needs_help(conn, agent, str(exc))
                     if str(exc) != str(agent.get("last_error") or ""):
-                        record_agent_event(
-                            conn,
-                            int(agent["id"]),
-                            "error",
-                            state_name=agent["current_state"],
-                            reason=str(exc),
-                        )
                         record_daemon_event(
                             conn,
                             level="warning",
                             message=f"agent #{agent['id']} {agent['flow_name']}:{agent['current_state']} {exc}",
                             details_text=details,
                         )
-                    update_agent(
-                        conn,
-                        int(agent["id"]),
-                        last_error=str(exc),
-                        status_message=str(exc),
-                    )
 
     def _recover_agents_after_restart(self, conn: Any) -> None:
         if self._recovered:
@@ -694,6 +682,28 @@ class Runtime:
             agent["rollout_path"] = observation.rollout_path
         if updates:
             update_agent(conn, int(agent["id"]), **updates)
+
+    def _enter_needs_help(self, conn: Any, agent: dict[str, Any], reason: str) -> None:
+        close_open_state_run(conn, int(agent["id"]))
+        if reason != str(agent.get("last_error") or ""):
+            record_agent_event(
+                conn,
+                int(agent["id"]),
+                "needs_help",
+                state_name=agent["current_state"],
+                reason=reason,
+            )
+        update_agent(
+            conn,
+            int(agent["id"]),
+            substate="needs_help",
+            phase="paused",
+            current_turn_id="",
+            current_turn_kind="",
+            current_turn_started_at="",
+            last_error=reason,
+            status_message="Needs help",
+        )
 
 
 def build_state_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any]) -> str:

@@ -16,6 +16,27 @@ from .flowfile import FlowSpec
 from .paths import db_path, ensure_home
 
 SCHEMA_VERSION = 5
+META_DEFAULTS = {
+    "schema_version": str(SCHEMA_VERSION),
+    "daemon_pid": "",
+    "daemon_started_at": "",
+    "daemon_heartbeat_at": "",
+    "daemon_last_exit_at": "",
+    "daemon_last_exit_kind": "",
+    "daemon_last_error": "",
+    "daemon_last_error_at": "",
+    "list_last_seen_error_at": "",
+}
+REQUIRED_TABLES = {
+    "meta",
+    "flow_snapshots",
+    "agents",
+    "commands",
+    "state_runs",
+    "transitions",
+    "agent_events",
+    "daemon_events",
+}
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
@@ -30,6 +51,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
+    if _schema_is_current(conn):
+        return
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS meta (
@@ -143,22 +166,34 @@ def ensure_meta_defaults(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_meta_defaults(conn: sqlite3.Connection) -> None:
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)", (str(SCHEMA_VERSION),))
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('daemon_pid', '')")
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('daemon_started_at', '')")
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('daemon_heartbeat_at', '')")
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('daemon_last_exit_at', '')")
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('daemon_last_exit_kind', '')")
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('daemon_last_error', '')")
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('daemon_last_error_at', '')")
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('list_last_seen_error_at', '')")
+    existing = {str(row["key"]) for row in conn.execute("SELECT key FROM meta")}
+    missing = [(key, value) for key, value in META_DEFAULTS.items() if key not in existing]
+    if not missing:
+        return
+    conn.executemany("INSERT INTO meta(key, value) VALUES(?, ?)", missing)
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(agents)")}
+    migrated = False
     if "ready_at" not in columns:
         conn.execute("ALTER TABLE agents ADD COLUMN ready_at TEXT NOT NULL DEFAULT ''")
-    set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+        migrated = True
+    if migrated or get_meta(conn, "schema_version") != str(SCHEMA_VERSION):
+        set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+
+
+def _schema_is_current(conn: sqlite3.Connection) -> bool:
+    tables = {str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not REQUIRED_TABLES.issubset(tables):
+        return False
+    columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(agents)")}
+    if "ready_at" not in columns:
+        return False
+    meta_keys = {str(row["key"]) for row in conn.execute("SELECT key FROM meta")}
+    if not set(META_DEFAULTS).issubset(meta_keys):
+        return False
+    return get_meta(conn, "schema_version") == str(SCHEMA_VERSION)
 
 
 @contextmanager

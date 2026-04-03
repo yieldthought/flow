@@ -7,6 +7,7 @@ import json
 import os
 import select
 import shutil
+import sqlite3
 import subprocess
 import sys
 import termios
@@ -528,8 +529,13 @@ def _draw_top_frame(render_once: Callable[[], str], fitter: Callable[[str, int],
 
 
 def _mark_list_seen(conn: Any) -> None:
-    set_meta(conn, "list_last_seen_error_at", format_utc(utc_now()))
-    conn.commit()
+    try:
+        set_meta(conn, "list_last_seen_error_at", format_utc(utc_now()))
+        conn.commit()
+    except sqlite3.OperationalError as exc:
+        conn.rollback()
+        if "database is locked" not in str(exc).lower():
+            raise
 
 
 @contextmanager

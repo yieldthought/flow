@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shlex
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
@@ -98,6 +99,20 @@ def render_show(conn: Any, agent: dict[str, Any], events: list[dict[str, Any]]) 
     )
     if agent.get("status_message"):
         lines.append(f"{color('Status', PALETTE.muted)} {color(str(agent['status_message']), PALETTE.subtle)}")
+    thread_id = str(agent.get("thread_id") or "").strip()
+    if thread_id:
+        lines.append(f"{color('Codex', PALETTE.muted)} {color(thread_id, PALETTE.subtle)}")
+        if agent.get("ended_at"):
+            resume_command = " ".join(
+                [
+                    "codex",
+                    "--cd",
+                    shlex.quote(str(agent.get("cwd") or "")),
+                    "resume",
+                    shlex.quote(thread_id),
+                ]
+            )
+            lines.append(f"{color('Resume', PALETTE.muted)} {color(resume_command, PALETTE.subtle)}")
 
     args_payload = _parse_args_payload(agent.get("args_json", ""))
     for key, value in sorted(args_payload.items()):

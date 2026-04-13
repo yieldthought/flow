@@ -1167,6 +1167,73 @@ done:
     assert re.search(r"\d{2}:\d{2} on Apr 12", text)
 
 
+def test_render_show_includes_codex_thread_and_resume_hint_for_finished_agent(tmp_path: Path, monkeypatch: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    base = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow.store.utc_now", lambda: later)
+    monkeypatch.setattr("flow.render.utc_now", lambda: later)
+
+    conn = connect()
+    init_db(conn)
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(path), {}, cwd_override=str(tmp_path))
+    snapshot_id = record_flow_snapshot(conn, flow, str(flow_to_dict(flow)))
+    agent_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="start",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    conn.execute(
+        "UPDATE agents SET created_at=?, updated_at=?, state_entered_at=?, thread_id=?, ended_at=? WHERE id=?",
+        (format_utc(base), format_utc(later), format_utc(base), "thread-123", format_utc(later), agent_id),
+    )
+    record_agent_event(
+        conn,
+        agent_id,
+        "decision",
+        created_at=format_utc(later),
+        from_state="start",
+        to_state="done",
+        reason="finished",
+    )
+    conn.commit()
+
+    text = render_show(
+        conn,
+        dict(get_agent(conn, agent_id)),
+        [dict(row) for row in conn.execute("SELECT * FROM agent_events WHERE agent_id=? ORDER BY created_at, id", (agent_id,))],
+    )
+
+    assert "Codex" in text
+    assert "thread-123" in text
+    assert f"codex --cd {tmp_path} resume thread-123" in text
+
+
 def test_render_show_colors_needs_help_substate_and_event_token(tmp_path: Path, monkeypatch: object) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     monkeypatch.setenv("TERM", "xterm-256color")

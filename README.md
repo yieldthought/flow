@@ -306,6 +306,8 @@ flow show 12 --top
 - start time
 - total running time
 - total waiting time
+- Codex thread id when known
+- a `codex resume ...` hint for finished agents when possible
 - args
 - a timestamped event log
 

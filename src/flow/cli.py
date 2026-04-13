@@ -15,14 +15,15 @@ import time
 import tty
 import uuid
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
 from .backend import CodexBackend
-from .common import format_utc, to_json, utc_now
+from .common import format_utc, parse_wait_seconds, to_json, utc_now
 from .flowfile import flow_to_dict, load_flow, parse_start_arguments, render_flow, validate_flow
 from .paths import ensure_home, logs_dir
-from .render import fit_list_top, fit_show_top, render_list, render_show
+from .render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
 from .runtime import Runtime
 from .store import (
     connect,
@@ -32,6 +33,8 @@ from .store import (
     get_agent,
     get_flow_snapshot,
     list_agent_events,
+    list_top_agent_events,
+    list_top_agents,
     get_meta,
     init_db,
     list_agents,
@@ -62,6 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser = subparsers.add_parser("show")
     show_parser.add_argument("agent_id")
     show_parser.add_argument("--top", action="store_true")
+
+    top_parser = subparsers.add_parser("top")
+    top_parser.add_argument("flow_name", nargs="?")
+    top_parser.add_argument(
+        "--recent",
+        default="1h",
+        help="include agents finished within this duration (default: 1h)",
+    )
 
     ui_parser = subparsers.add_parser("ui")
     ui_parser.add_argument("flow_name")
@@ -112,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     init_db(conn)
     if args.command == "show":
         return cmd_show(conn, int(args.agent_id), top=bool(args.top))
+    if args.command == "top":
+        return cmd_top(conn, args.flow_name, recent=str(args.recent))
     if args.command == "ui":
         return cmd_ui(conn, args.flow_name)
     if args.command == "init":
@@ -287,6 +300,32 @@ def cmd_show(conn: Any, agent_id: int, *, top: bool = False) -> int:
 
     print(render_once())
     return 0
+
+
+def cmd_top(conn: Any, flow_name: str | None, *, recent: str = "1h") -> int:
+    try:
+        recent_seconds = parse_wait_seconds(recent)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    def render_once() -> str:
+        cutoff = format_utc(utc_now() - timedelta(seconds=recent_seconds))
+        agents = [dict(row) for row in list_top_agents(conn, flow_name=flow_name, ended_after=cutoff)]
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        event_limit = max(200, shutil.get_terminal_size(fallback=(80, 24)).lines * 20) if interactive else None
+        events = [
+            dict(row)
+            for row in list_top_agent_events(conn, flow_name=flow_name, ended_after=cutoff, limit=event_limit)
+        ]
+        return render_top_dashboard(conn, agents, events)
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(render_once())
+        _mark_list_seen(conn)
+        return 0
+
+    return run_top_mode(render_once, fitter=fit_top_dashboard, on_exit=lambda: _mark_list_seen(conn))
 
 
 def cmd_ui(conn: Any, flow_name: str) -> int:

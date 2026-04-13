@@ -8,10 +8,22 @@ from pathlib import Path
 import pytest
 
 from flow.ansi import PALETTE
-from flow.cli import cmd_list, cmd_restart, cmd_validate, cmd_view, main, run_top_mode
+from flow.cli import cmd_list, cmd_restart, cmd_top, cmd_validate, cmd_view, main, run_top_mode
 from flow.common import format_utc, utc_now
-from flow.render import fit_list_top, fit_show_top, render_list, render_show
-from flow.store import connect, create_agent, get_agent, get_meta, init_db, record_agent_event, record_daemon_event, record_flow_snapshot, set_meta
+from flow.render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
+from flow.store import (
+    connect,
+    create_agent,
+    get_agent,
+    get_meta,
+    init_db,
+    list_top_agent_events,
+    list_top_agents,
+    record_agent_event,
+    record_daemon_event,
+    record_flow_snapshot,
+    set_meta,
+)
 from flow.flowfile import flow_to_dict, load_flow, parse_start_arguments, render_flow
 
 
@@ -223,6 +235,119 @@ def test_cmd_list_succeeds_while_writer_holds_lock(tmp_path: Path, monkeypatch: 
         writer.close()
 
     assert "Runtime" in capsys.readouterr().out
+
+
+def test_cmd_top_uses_top_mode_and_filters_recent_agents(tmp_path: Path, monkeypatch: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    now_value = datetime(2026, 4, 13, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow.cli.utc_now", lambda: now_value)
+    monkeypatch.setattr("flow.render.utc_now", lambda: now_value)
+
+    conn = connect()
+    init_db(conn)
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(path), {}, cwd_override=str(tmp_path))
+    snapshot_id = record_flow_snapshot(conn, flow, str(flow_to_dict(flow)))
+    active_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="start",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    recent_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="start",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    stale_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="start",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    conn.execute(
+        "UPDATE agents SET ended_at=?, phase='finished' WHERE id=?",
+        (format_utc(now_value - timedelta(minutes=30)), recent_id),
+    )
+    conn.execute(
+        "UPDATE agents SET ended_at=?, phase='finished' WHERE id=?",
+        (format_utc(now_value - timedelta(hours=2)), stale_id),
+    )
+    record_agent_event(
+        conn,
+        recent_id,
+        "decision",
+        created_at=format_utc(now_value - timedelta(minutes=20)),
+        from_state="start",
+        to_state="done",
+        reason="finished recently",
+    )
+    conn.commit()
+
+    seen: dict[str, str] = {}
+
+    class FakeTTY:
+        def isatty(self) -> bool:
+            return True
+
+    def fake_top(render_once: object, *, fitter: object, on_exit: object = None, refresh_seconds: float = 5.0) -> int:
+        del refresh_seconds
+        seen["before"] = get_meta(conn, "list_last_seen_error_at")
+        assert fitter is fit_top_dashboard
+        frame = render_once()
+        assert f"#{active_id}" in frame
+        assert f"#{recent_id}" in frame
+        assert f"#{stale_id}" not in frame
+        assert "Recent Events" in frame
+        assert "finished recently" in frame
+        assert on_exit is not None
+        on_exit()
+        seen["after"] = get_meta(conn, "list_last_seen_error_at")
+        return 0
+
+    monkeypatch.setattr("flow.cli.sys.stdin", FakeTTY())
+    monkeypatch.setattr("flow.cli.sys.stdout", FakeTTY())
+    monkeypatch.setattr("flow.cli.run_top_mode", fake_top)
+
+    assert cmd_top(conn, None, recent="1h") == 0
+    assert seen["before"] == ""
+    assert seen["after"]
 
 
 def test_cmd_view_single_agent_uses_direct_attach(tmp_path: Path, monkeypatch: object) -> None:
@@ -667,6 +792,41 @@ def test_fit_list_top_truncates_with_summary() -> None:
     lines = fitted.splitlines()
     assert lines[:2] == ["one", "two"]
     assert "2 more lines" in lines[2]
+
+
+def test_fit_top_dashboard_preserves_recent_event_tail() -> None:
+    text = "\n".join(
+        [
+            "summary 1",
+            "summary 2",
+            "summary 3",
+            "summary 4",
+            "summary 5",
+            "",
+            "Recent Events",
+            "event 1",
+            "event 2",
+            "event 3",
+            "event 4",
+            "event 5",
+            "event 6",
+            "event 7",
+        ]
+    )
+    fitted = fit_top_dashboard(text, 10)
+
+    assert fitted.splitlines() == [
+        "summary 1",
+        "... 4 more lines",
+        "",
+        "Recent Events",
+        "event 2",
+        "event 3",
+        "event 4",
+        "event 5",
+        "event 6",
+        "event 7",
+    ]
 
 
 def test_render_list_shows_waiting_agents(tmp_path: Path, monkeypatch: object) -> None:
@@ -1165,6 +1325,125 @@ done:
 
     assert re.search(r"\d{2}:\d{2} on Apr  1", text)
     assert re.search(r"\d{2}:\d{2} on Apr 12", text)
+
+
+def test_cmd_top_non_tty_prints_once(tmp_path: Path, monkeypatch: object, capsys: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    now_value = datetime(2026, 4, 13, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow.cli.utc_now", lambda: now_value)
+    monkeypatch.setattr("flow.render.utc_now", lambda: now_value)
+
+    conn = connect()
+    init_db(conn)
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(path), {}, cwd_override=str(tmp_path))
+    snapshot_id = record_flow_snapshot(conn, flow, str(flow_to_dict(flow)))
+    agent_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="start",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    record_agent_event(
+        conn,
+        agent_id,
+        "pause",
+        created_at=format_utc(now_value),
+        state_name="start",
+        reason="Paused by alice",
+    )
+    conn.commit()
+
+    monkeypatch.setattr("flow.cli.run_top_mode", lambda *args, **kwargs: pytest.fail("run_top_mode should not be used"))
+
+    assert cmd_top(conn, None, recent="1h") == 0
+    out = capsys.readouterr().out
+    assert "Recent Events" in out
+    assert f"#{agent_id}" in out
+    assert "Paused by alice" in out
+
+
+def test_render_top_dashboard_uses_aggregated_event_context(tmp_path: Path, monkeypatch: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    now_value = datetime(2026, 4, 13, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow.render.utc_now", lambda: now_value)
+
+    conn = connect()
+    init_db(conn)
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(path), {}, cwd_override=str(tmp_path))
+    snapshot_id = record_flow_snapshot(conn, flow, str(flow_to_dict(flow)))
+    agent_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="start",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    record_agent_event(
+        conn,
+        agent_id,
+        "decision",
+        created_at=format_utc(now_value),
+        from_state="start",
+        to_state="done",
+        reason="wrapped up",
+    )
+    conn.commit()
+
+    agents = [dict(row) for row in list_top_agents(conn, ended_after=format_utc(now_value - timedelta(hours=1)))]
+    events = [dict(row) for row in list_top_agent_events(conn, ended_after=format_utc(now_value - timedelta(hours=1)), limit=None)]
+    text = render_top_dashboard(conn, agents, events)
+
+    assert "Recent Events" in text
+    assert f"#{agent_id}" in text
+    assert "demo/start" in text
+    assert "wrapped up" in text
 
 
 def test_render_show_includes_codex_thread_and_resume_hint_for_finished_agent(tmp_path: Path, monkeypatch: object) -> None:

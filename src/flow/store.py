@@ -279,6 +279,25 @@ def list_agents(conn: sqlite3.Connection, flow_name: str | None = None) -> list[
     return list(conn.execute(sql, params))
 
 
+def list_top_agents(
+    conn: sqlite3.Connection,
+    flow_name: str | None = None,
+    *,
+    ended_after: str = "",
+) -> list[sqlite3.Row]:
+    sql = "SELECT * FROM agents WHERE delete_requested_at = '' AND (ended_at = ''"
+    params: list[Any] = []
+    if ended_after:
+        sql += " OR ended_at >= ?"
+        params.append(ended_after)
+    sql += ")"
+    if flow_name:
+        sql += " AND flow_name = ?"
+        params.append(flow_name)
+    sql += " ORDER BY flow_name, current_state, id"
+    return list(conn.execute(sql, params))
+
+
 def get_agent(conn: sqlite3.Connection, agent_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
 
@@ -418,6 +437,39 @@ def record_agent_event(
 
 def list_agent_events(conn: sqlite3.Connection, agent_id: int) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM agent_events WHERE agent_id=? ORDER BY created_at, id", (agent_id,)))
+
+
+def list_top_agent_events(
+    conn: sqlite3.Connection,
+    flow_name: str | None = None,
+    *,
+    ended_after: str = "",
+    limit: int | None = 500,
+) -> list[sqlite3.Row]:
+    sql = """
+        SELECT
+            agent_events.*,
+            agents.flow_name AS flow_name,
+            agents.current_state AS current_state
+        FROM agent_events
+        JOIN agents ON agents.id = agent_events.agent_id
+        WHERE agents.delete_requested_at = '' AND (agents.ended_at = ''
+    """
+    params: list[Any] = []
+    if ended_after:
+        sql += " OR agents.ended_at >= ?"
+        params.append(ended_after)
+    sql += ")"
+    if flow_name:
+        sql += " AND agents.flow_name = ?"
+        params.append(flow_name)
+    sql += " ORDER BY agent_events.created_at DESC, agent_events.id DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = list(conn.execute(sql, params))
+    rows.reverse()
+    return rows
 
 
 def active_agent_count(conn: sqlite3.Connection) -> int:

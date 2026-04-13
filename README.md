@@ -51,6 +51,7 @@ Monitor the situation:
 ```bash
 $ flow list
 $ flow list --top
+$ flow top
 Runtime active | uptime 00:18:01 | active agents 3 | total agents 4 | cumulative agent time 00:11:18
 
 agi-watcher
@@ -293,6 +294,14 @@ flow list agi-watcher
 flow list --top
 ```
 
+Open the live dashboard of active and recently finished agents:
+
+```bash
+flow top
+flow top agi-watcher
+flow top --recent 4h
+```
+
 Show one agent in detail:
 
 ```bash
@@ -311,7 +320,11 @@ flow show 12 --top
 - args
 - a timestamped event log
 
-With `--top`, `flow list` and `flow show` clear and redraw the screen every five seconds. Press `space` to refresh immediately and `q` to exit.
+`flow top` shows the `flow list` summary for active agents plus agents that finished recently, with a `Recent Events` section underneath. By default the recent window is `1h`.
+
+With `--top`, `flow list` and `flow show`, and with `flow top`, the screen clears and redraws every five seconds. Press `space` to refresh immediately and `q` to exit.
+
+If `flow top` is run without a terminal on stdin or stdout, it prints one full dashboard snapshot and exits instead of entering the live redraw loop.
 
 View live tmux sessions:
 

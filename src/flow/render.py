@@ -133,6 +133,22 @@ def render_show(conn: Any, agent: dict[str, Any], events: list[dict[str, Any]]) 
     return "\n".join(lines)
 
 
+def render_top_dashboard(conn: Any, agents: list[dict[str, Any]], events: list[dict[str, Any]]) -> str:
+    lines = render_list(conn, agents).splitlines()
+    lines.append("")
+    lines.append(bold(color("Recent Events", PALETTE.bright, bold=True)))
+    if not events:
+        lines.append(color("No recent events.", PALETTE.subtle))
+        return "\n".join(lines)
+
+    pad_day = _top_events_use_day_padding(events)
+    context_width = max((len(_top_event_context(event)) for event in events), default=0)
+    id_width = max((len(f"#{event['agent_id']}") for event in events), default=2)
+    for event in events:
+        lines.append(_render_top_event(event, id_width=id_width, context_width=context_width, pad_day=pad_day))
+    return "\n".join(lines)
+
+
 def fit_list_top(text: str, height: int) -> str:
     lines = text.splitlines()
     if height <= 0:
@@ -166,6 +182,42 @@ def fit_show_top(text: str, height: int) -> str:
     if len(body_lines) <= slots:
         return text
     return "\n".join(header_lines + body_lines[-slots:])
+
+
+def fit_top_dashboard(text: str, height: int) -> str:
+    lines = text.splitlines()
+    if height <= 0:
+        return ""
+    if len(lines) <= height:
+        return text
+
+    header_index = next((index for index, line in enumerate(lines) if _strip_ansi(line).strip() == "Recent Events"), -1)
+    if header_index < 0:
+        return fit_list_top(text, height)
+
+    summary_lines = lines[:header_index]
+    while summary_lines and not _strip_ansi(summary_lines[-1]).strip():
+        summary_lines.pop()
+    header_line = lines[header_index]
+    event_lines = lines[header_index + 1 :]
+    if not event_lines:
+        event_lines = [color("No recent events.", PALETTE.subtle)]
+
+    if height <= 2:
+        if height == 1:
+            return header_line
+        return "\n".join([header_line, event_lines[-1]])
+
+    min_event_lines = min(len(event_lines), 6)
+    reserved = 2 + min_event_lines
+    if height <= reserved:
+        body_keep = max(1, height - 1)
+        return "\n".join([header_line, *event_lines[-body_keep:]])
+
+    summary_text = fit_list_top("\n".join(summary_lines), height - reserved)
+    shown_summary = summary_text.splitlines() if summary_text else []
+    remaining = max(1, height - len(shown_summary) - 2)
+    return "\n".join([*shown_summary, "", header_line, *event_lines[-remaining:]])
 
 
 def _render_agent(conn: Any, agent: dict[str, Any], *, id_width: int, status_width: int) -> str:
@@ -326,34 +378,67 @@ def _render_event(event: dict[str, Any], *, state_width: int, pad_day: bool) -> 
     kind = str(event.get("kind") or "")
     state_name = str(event.get("state_name") or "")
     from_state = str(event.get("from_state") or "")
+    body = _render_event_body(event, pad_day=pad_day)
+
+    if kind == "decision":
+        source = _render_state_column(from_state or state_name or "state", state_width)
+        return f"{source} {body}"
+    if kind in {"started", "delay", "pause", "interrupt", "resume", "wake", "needs_help"}:
+        return f"{_render_state_column(state_name or from_state, state_width)}    {body}"
+    return body
+
+
+def _render_event_body(event: dict[str, Any], *, pad_day: bool) -> str:
+    kind = str(event.get("kind") or "")
     to_state = str(event.get("to_state") or "")
     choice = str(event.get("choice") or "")
     reason = str(event.get("reason") or "")
     payload = _parse_args_payload(event.get("payload_json", ""))
 
     if kind == "started":
-        return f"{_render_state_column(state_name, state_width)}    {color('started', PALETTE.accent)}"
+        return color("started", PALETTE.accent)
     if kind == "decision":
-        source = _render_state_column(from_state or state_name or "state", state_width)
         target = to_state or choice or "decision"
-        return f"{source} -> {bold(color(target, PALETTE.accent, bold=True))}{_quoted_reason(reason)}"
+        return f"-> {bold(color(target, PALETTE.accent, bold=True))}{_quoted_reason(reason)}"
     if kind == "delay":
         wait_value = str(payload.get("wait") or "").strip() or "?"
         ready_at = str(payload.get("ready_at") or "")
         until_text = _format_show_timestamp(ready_at, pad_day=pad_day) if ready_at else "-"
-        return f"{_render_state_column(state_name or from_state, state_width)}    {color('wait', PALETTE.warn, bold=True)} for {color(wait_value, PALETTE.warn, bold=True)} until {until_text}"
+        return f"{color('wait', PALETTE.warn, bold=True)} for {color(wait_value, PALETTE.warn, bold=True)} until {until_text}"
     if kind == "pause":
-        return f"{_render_state_column(state_name or from_state, state_width)}    {color('paused', PALETTE.warn)}{_quoted_reason(reason)}"
+        return f"{color('paused', PALETTE.warn)}{_quoted_reason(reason)}"
     if kind == "interrupt":
-        return f"{_render_state_column(state_name or from_state, state_width)}    {color('interrupted', PALETTE.warn)}{_quoted_reason(reason)}"
+        return f"{color('interrupted', PALETTE.warn)}{_quoted_reason(reason)}"
     if kind == "resume":
-        return f"{_render_state_column(state_name or from_state, state_width)}    {color('resumed', PALETTE.ok)}{_quoted_reason(reason)}"
+        return f"{color('resumed', PALETTE.ok)}{_quoted_reason(reason)}"
     if kind == "wake":
-        return f"{_render_state_column(state_name or from_state, state_width)}    {color('woke', PALETTE.accent)}{_quoted_reason(reason)}"
+        return f"{color('woke', PALETTE.accent)}{_quoted_reason(reason)}"
     if kind == "needs_help":
-        return f"{_render_state_column(state_name or from_state, state_width)}    {color('needs_help', PALETTE.error, bold=True)}{_quoted_reason(reason)}"
+        return f"{color('needs_help', PALETTE.error, bold=True)}{_quoted_reason(reason)}"
     label = kind or "event"
     return f"{color(label, PALETTE.accent)}{_quoted_reason(reason)}"
+
+
+def _render_top_event(event: dict[str, Any], *, id_width: int, context_width: int, pad_day: bool) -> str:
+    when = _format_show_timestamp(str(event.get("created_at") or ""), pad_day=pad_day)
+    agent_label = color(f"#{event['agent_id']}".ljust(id_width), PALETTE.accent, bold=True)
+    context = _top_event_context(event).ljust(max(context_width, 1))
+    context_label = bold(color(context, PALETTE.state, bold=True))
+    return f"{when}  {agent_label}  {context_label}  {_render_event_body(event, pad_day=pad_day)}"
+
+
+def _top_event_context(event: dict[str, Any]) -> str:
+    flow_name = str(event.get("flow_name") or "").strip()
+    state_name = str(
+        event.get("state_name")
+        or event.get("from_state")
+        or event.get("current_state")
+        or event.get("to_state")
+        or "state"
+    ).strip()
+    if flow_name and state_name:
+        return f"{flow_name}/{state_name}"
+    return flow_name or state_name or "state"
 
 
 def _render_state_column(value: str, width: int) -> str:
@@ -383,6 +468,26 @@ def _show_uses_day_padding(agent: dict[str, Any], events: list[dict[str, Any]]) 
 
 def _show_timestamp_values(agent: dict[str, Any], events: list[dict[str, Any]]) -> list[str]:
     values = [str(agent.get("created_at") or "")]
+    for event in events:
+        values.append(str(event.get("created_at") or ""))
+        payload = _parse_args_payload(event.get("payload_json", ""))
+        if payload.get("ready_at"):
+            values.append(str(payload.get("ready_at") or ""))
+    return values
+
+
+def _top_events_use_day_padding(events: list[dict[str, Any]]) -> bool:
+    widths: set[int] = set()
+    for value in _top_event_timestamp_values(events):
+        parsed = parse_utc(value)
+        if parsed is None:
+            continue
+        widths.add(len(str(parsed.astimezone().day)))
+    return widths == {1, 2}
+
+
+def _top_event_timestamp_values(events: list[dict[str, Any]]) -> list[str]:
+    values: list[str] = []
     for event in events:
         values.append(str(event.get("created_at") or ""))
         payload = _parse_args_payload(event.get("payload_json", ""))

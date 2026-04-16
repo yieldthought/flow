@@ -38,9 +38,10 @@ class FakeBackend(AgentBackend):
         self.sessions[agent_id] = True
         return {"launch_command": f"fake-launch-{agent_id}"}
 
-    def send_prompt(self, agent: dict[str, Any], prompt: str) -> None:
+    def send_prompt(self, agent: dict[str, Any], prompt: str) -> TurnObservation:
         agent_id = int(agent["id"])
         self.prompts.setdefault(agent_id, []).append(prompt)
+        return TurnObservation(status="running", started_at=format_utc(utc_now()))
 
     def interrupt(self, agent: dict[str, Any]) -> None:
         return None
@@ -748,3 +749,45 @@ done:
     assert agent["status_message"] == "Needs help"
     assert events[-1]["kind"] == "needs_help"
     assert events[-1]["reason"] == "codex readiness probe failed"
+
+
+def test_runtime_tick_survives_prompt_submission_error(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+
+    class BrokenBackend(FakeBackend):
+        def send_prompt(self, agent: dict[str, Any], prompt: str) -> TurnObservation:
+            del agent, prompt
+            raise RuntimeError("prompt submission was not acknowledged")
+
+    runtime = Runtime(backend=BrokenBackend())
+    runtime.tick(conn)
+
+    agent = dict(get_agent(conn, agent_id))
+    events = [dict(row) for row in list_agent_events(conn, agent_id)]
+    assert agent["substate"] == "needs_help"
+    assert agent["phase"] == "paused"
+    assert agent["last_error"] == "prompt submission was not acknowledged"
+    assert agent["status_message"] == "Needs help"
+    assert events[-1]["kind"] == "needs_help"
+    assert events[-1]["reason"] == "prompt submission was not acknowledged"

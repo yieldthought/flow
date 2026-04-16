@@ -12,6 +12,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ class AgentBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def send_prompt(self, agent: dict[str, Any], prompt: str) -> None:
+    def send_prompt(self, agent: dict[str, Any], prompt: str) -> TurnObservation:
         raise NotImplementedError
 
     @abstractmethod
@@ -85,19 +86,29 @@ class CodexBackend(AgentBackend):
             self._wait_for_codex_ready(session)
         return {"launch_command": desired, "thread_id": agent.get("thread_id", "")}
 
-    def send_prompt(self, agent: dict[str, Any], prompt: str) -> None:
+    def send_prompt(self, agent: dict[str, Any], prompt: str) -> TurnObservation:
         target = f"{agent['tmux_session']}:0.0"
         self._wait_for_prompt_ready(agent["tmux_session"])
+        baseline = self._capture_pane_text(target)
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             handle.write(prompt)
             buffer_path = handle.name
         try:
             self._run_tmux(["load-buffer", buffer_path])
             self._run_tmux(["paste-buffer", "-d", "-t", target])
-            # The standalone Codex TUI debounces paste bursts; an immediate Enter
-            # can be consumed by the composer before the pasted prompt settles.
-            time.sleep(1.0)
+            self._wait_for_paste_settle(target, baseline)
+            submitted_at = utc_now()
             self._run_tmux(["send-keys", "-t", target, "Enter"])
+            try:
+                return self._wait_for_turn_start(agent, started_after=submitted_at, timeout_seconds=10.0)
+            except RuntimeError:
+                current_command = self._pane_current_command(target)
+                text = self._capture_pane_text(target)
+                if _looks_like_codex_prompt_ready(text, current_command=current_command):
+                    retry_submitted_at = utc_now()
+                    self._run_tmux(["send-keys", "-t", target, "Enter"])
+                    return self._wait_for_turn_start(agent, started_after=retry_submitted_at, timeout_seconds=10.0)
+                raise
         finally:
             try:
                 os.unlink(buffer_path)
@@ -303,6 +314,14 @@ class CodexBackend(AgentBackend):
             raise RuntimeError(f"tmux {' '.join(args)} failed: {stderr}")
         return result
 
+    def _capture_pane_text(self, target: str, start_line: int = -80) -> str:
+        capture = self._run_tmux(["capture-pane", "-pt", target, "-S", str(start_line)])
+        return capture.stdout or ""
+
+    def _pane_current_command(self, target: str) -> str:
+        current = self._run_tmux(["display-message", "-p", "-t", target, "#{pane_current_command}"])
+        return (current.stdout or "").strip()
+
     def _new_session_command(self, session: str, cwd: str, shell: str) -> list[str]:
         command = ["new-session", "-d", "-s", session, "-c", cwd, "env"]
         for name in _session_env_unset_names():
@@ -357,28 +376,75 @@ class CodexBackend(AgentBackend):
         raise RuntimeError(f"Codex did not become ready in tmux session '{session}'")
 
     def _wait_for_prompt_ready(self, session: str, timeout_seconds: float = 15.0) -> None:
-        import time
-
         deadline = utc_now().timestamp() + timeout_seconds
         target = f"{session}:0.0"
         while utc_now().timestamp() < deadline:
-            current = subprocess.run(
-                ["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"],
-                capture_output=True,
-                text=True,
-            )
-            capture = subprocess.run(
-                ["tmux", "capture-pane", "-pt", target, "-S", "-80"],
-                capture_output=True,
-                text=True,
-            )
-            if capture.returncode == 0:
-                text = capture.stdout or ""
-                current_command = (current.stdout or "").strip()
-                if _looks_like_codex_prompt_ready(text, current_command=current_command):
-                    return
+            text = self._capture_pane_text(target)
+            current_command = self._pane_current_command(target)
+            if _looks_like_codex_prompt_ready(text, current_command=current_command):
+                return
             time.sleep(0.1)
         raise RuntimeError(f"Codex prompt input did not become ready in tmux session '{session}'")
+
+    def _wait_for_paste_settle(self, target: str, baseline: str, timeout_seconds: float = 5.0) -> None:
+        deadline = utc_now().timestamp() + timeout_seconds
+        saw_change = False
+        stable_text = ""
+        stable_count = 0
+        while utc_now().timestamp() < deadline:
+            text = self._capture_pane_text(target)
+            if text != baseline:
+                saw_change = True
+                if text == stable_text:
+                    stable_count += 1
+                else:
+                    stable_text = text
+                    stable_count = 1
+                if stable_count >= 2:
+                    return
+            time.sleep(0.05)
+        if not saw_change:
+            raise RuntimeError("pasted prompt never appeared in the Codex pane")
+
+    def _wait_for_turn_start(
+        self,
+        agent: dict[str, Any],
+        *,
+        started_after: datetime,
+        timeout_seconds: float = 10.0,
+    ) -> TurnObservation:
+        deadline = utc_now().timestamp() + timeout_seconds
+        thread_id = agent.get("thread_id", "") or ""
+        rollout_path = agent.get("rollout_path", "") or ""
+        launch_marker = agent.get("launch_marker", "") or ""
+
+        while utc_now().timestamp() < deadline:
+            resolved_path, resolved_thread_id = self._resolve_rollout(
+                thread_id,
+                rollout_path,
+                launch_marker,
+                format_utc(started_after),
+            )
+            if resolved_path:
+                thread_id = resolved_thread_id or thread_id
+                rollout_path = resolved_path
+                turn = _find_turn(events=_read_rollout_events(Path(resolved_path)), current_turn_id="", started_after=started_after)
+                if turn is not None:
+                    status = "completed" if turn["ended_at"] else "running"
+                    return TurnObservation(
+                        status=status,
+                        thread_id=thread_id,
+                        rollout_path=rollout_path,
+                        turn_id=turn["turn_id"],
+                        started_at=turn["started_at"],
+                        ended_at=turn["ended_at"],
+                        output_text=turn["output_text"],
+                        raw_output=turn["raw_output"],
+                        last_event_at=turn["last_event_at"],
+                    )
+            time.sleep(0.1)
+
+        raise RuntimeError(f"prompt submission was not acknowledged in tmux session '{agent['tmux_session']}'")
 
     def _session_has_live_codex(self, session: str) -> bool:
         target = f"{session}:0.0"
@@ -568,9 +634,12 @@ def _find_turn(
     events: list[dict[str, Any]],
     *,
     current_turn_id: str,
-    started_after: str,
+    started_after: str | datetime,
 ) -> dict[str, str] | None:
-    started_after_dt = parse_utc(started_after)
+    if isinstance(started_after, datetime):
+        started_after_dt = started_after
+    else:
+        started_after_dt = parse_utc(started_after)
     candidate: dict[str, str] | None = None
     bucket: list[dict[str, Any]] = []
 

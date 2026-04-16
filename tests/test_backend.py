@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from flow.backend import (
     CodexBackend,
+    TurnObservation,
     _attach_env,
     _format_agent_args,
     _is_codex_process_name,
@@ -128,8 +129,20 @@ def test_send_prompt_waits_for_prompt_ready_before_pasting(monkeypatch: object) 
     backend = CodexBackend()
     calls: list[list[str]] = []
     waited: list[str] = []
+    settled: list[tuple[str, str]] = []
+    turn_waits: list[str] = []
 
     monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session: waited.append(session))
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "baseline")
+    monkeypatch.setattr(backend, "_wait_for_paste_settle", lambda target, baseline: settled.append((target, baseline)))
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_turn_start",
+        lambda agent, *, started_after, timeout_seconds=10.0: (
+            turn_waits.append(f"{agent['tmux_session']}:{timeout_seconds}"),
+            TurnObservation(status="running", started_at="2026-04-16T11:43:41.123Z"),
+        )[1],
+    )
 
     def fake_run_tmux(args: list[str], check: bool = True) -> SimpleNamespace:
         del check
@@ -138,12 +151,15 @@ def test_send_prompt_waits_for_prompt_ready_before_pasting(monkeypatch: object) 
 
     monkeypatch.setattr(backend, "_run_tmux", fake_run_tmux)
 
-    backend.send_prompt({"tmux_session": "flow-agent-9"}, "hello")
+    observation = backend.send_prompt({"tmux_session": "flow-agent-9"}, "hello")
 
     assert waited == ["flow-agent-9"]
+    assert settled == [("flow-agent-9:0.0", "baseline")]
+    assert turn_waits == ["flow-agent-9:10.0"]
     assert calls[0][0] == "load-buffer"
     assert calls[1][:4] == ["paste-buffer", "-d", "-t", "flow-agent-9:0.0"]
     assert calls[2] == ["send-keys", "-t", "flow-agent-9:0.0", "Enter"]
+    assert observation.started_at == "2026-04-16T11:43:41.123Z"
 
 
 def test_attach_env_unsets_tmux(monkeypatch: object) -> None:

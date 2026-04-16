@@ -449,18 +449,21 @@ class Runtime:
             self._send_turn(conn, agent, prompt, "transition_eval")
 
     def _send_turn(self, conn: Any, agent: dict[str, Any], prompt: str, kind: str) -> None:
-        self.backend.send_prompt(agent, prompt)
-        now = format_utc(utc_now())
-        update_agent(
-            conn,
-            int(agent["id"]),
-            current_turn_kind=kind,
-            current_turn_started_at=now,
-            current_turn_id="",
-            last_prompt_sent_at=now,
-            phase="working",
-            status_message=f"Waiting for {kind}",
-        )
+        observation = self.backend.send_prompt(agent, prompt)
+        now = observation.started_at or format_utc(utc_now())
+        fields: dict[str, str] = {
+            "current_turn_kind": kind,
+            "current_turn_started_at": now,
+            "current_turn_id": observation.turn_id or "",
+            "last_prompt_sent_at": now,
+            "phase": "working",
+            "status_message": f"Waiting for {kind}",
+        }
+        if observation.thread_id:
+            fields["thread_id"] = observation.thread_id
+        if observation.rollout_path:
+            fields["rollout_path"] = observation.rollout_path
+        update_agent(conn, int(agent["id"]), **fields)
 
     def _handle_completed_turn(
         self,

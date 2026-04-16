@@ -145,6 +145,10 @@ def validate_flow(flow: FlowSpec) -> ValidationResult:
     if not flow.start_states:
         errors.append("flow must define at least one start state")
 
+    missing_args = sorted(set(flow.placeholders) - set(flow.args))
+    for name in missing_args:
+        errors.append(f"placeholder '{{{{{name}}}}}' is used but not declared in flow.args")
+
     referenced = set()
     for state in flow.states.values():
         if state.name in RESERVED_STATE_NAMES:
@@ -245,32 +249,55 @@ def render_flow(flow: FlowSpec, values: dict[str, str], cwd_override: str | None
 
 def parse_start_arguments(flow: FlowSpec, state_token: str | None, argv: list[str]) -> tuple[str, dict[str, str], str]:
     selected_state, remainder = _resolve_state_token(flow, state_token, argv)
-    parser = argparse.ArgumentParser(prog="flow start", description=flow.description, add_help=False)
+    parser = argparse.ArgumentParser(
+        prog="flow start",
+        description=flow.description,
+        add_help=False,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
 
     arg_names = sorted(set(flow.placeholders) | set(flow.args))
+    default_values = {
+        name: str(spec.default)
+        for name, spec in flow.args.items()
+        if spec.default is not None
+    }
     for name in arg_names:
         spec = flow.args.get(name, ArgSpec(name))
         flag = f"--{canonical_cli_name(name)}"
-        kwargs: dict[str, Any] = {"dest": name, "help": spec.help or argparse.SUPPRESS}
+        kwargs: dict[str, Any] = {"dest": name, "help": spec.help or argparse.SUPPRESS, "default": argparse.SUPPRESS}
         if spec.default is not None:
             kwargs["default"] = str(spec.default)
         parser.add_argument(flag, **kwargs)
 
-    parser.add_argument("--path", dest="__path__", default=None, metavar="PATH")
+    path_default = None
+    if flow.path:
+        try:
+            path_default = _render_string(flow.path, default_values)
+        except ValueError:
+            path_default = flow.path
+    parser.add_argument(
+        "--path",
+        dest="__path__",
+        default=path_default if path_default is not None else argparse.SUPPRESS,
+        metavar="PATH",
+        help="override working directory for new agents",
+    )
     parser.add_argument("--help", action="help")
 
     parsed = parser.parse_args(remainder)
+    missing = object()
     values: dict[str, str] = {}
     for name in arg_names:
-        value = getattr(parsed, name)
-        if value is None:
+        value = getattr(parsed, name, missing)
+        if value is missing:
             raise ValueError(f"missing required argument '--{canonical_cli_name(name)}' for placeholder '{{{{{name}}}}}'")
         values[name] = str(value)
 
-    path_value = parsed.__path__
-    if path_value is None and flow.path:
+    path_value = getattr(parsed, "__path__", missing)
+    if path_value is missing and flow.path:
         path_value = _render_string(flow.path, values)
-    if path_value is None:
+    if path_value is missing:
         path_value = str(Path.cwd())
     return selected_state, values, expand_path(path_value)
 

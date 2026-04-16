@@ -112,6 +112,11 @@ flow:
   name: demo
   version: 1
   description: Start the demo flow for a single repo.
+  path: ~/Work/demo
+  args:
+    repo:
+      help: Repository to inspect
+      default: deepseek
 
 start:
   start: true
@@ -128,9 +133,74 @@ done:
         parse_start_arguments(load_flow(path), None, ["--help"])
 
     out = capsys.readouterr().out
+    compact = " ".join(out.split())
     assert "Start the demo flow for a single repo." in out
+    assert "--repo REPO" in out
+    assert "default: deepseek" in out
     assert "--path PATH" in out
+    assert "default: ~/Work/demo" in compact
     assert "__PATH__" not in out
+
+
+def test_parse_start_arguments_help_renders_path_default_from_arg_defaults(tmp_path: Path, capsys: object) -> None:
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: ./repos/{{repo}}
+  args:
+    repo:
+      help: Repository to inspect
+      default: deepseek
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+
+    with pytest.raises(SystemExit):
+        parse_start_arguments(load_flow(path), None, ["--help"])
+
+    out = capsys.readouterr().out
+    assert "default: ./repos/deepseek" in " ".join(out.split())
+
+
+def test_parse_start_arguments_help_hides_none_defaults(tmp_path: Path, capsys: object) -> None:
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: ~/Work/demo
+  args:
+    issue:
+      help: GitHub issue describing a failing CI workflow
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+
+    with pytest.raises(SystemExit):
+        parse_start_arguments(load_flow(path), None, ["--help"])
+
+    out = capsys.readouterr().out
+    assert "default: None" not in out
 
 
 def test_main_version_prints_and_exits(capsys: object) -> None:

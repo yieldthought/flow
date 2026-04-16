@@ -170,7 +170,7 @@ Top-level `flow:` fields:
 - `path`: initial working directory for new agents (optional, defaults to the current working directory where `flow start` is run)
 - `mode`: default Codex permissions mode (optional, defaults to `yolo`, other options are `danger-full-access`, `full-auto`, `workspace-write`, `read-only`)
 - `thinking`: default flow reasoning effort (optional, default `xhigh`, other options are `high`, `medium` and `low`)
-- `args`: named CLI arguments for placeholders (optional)
+- `args`: named CLI arguments for placeholders and their help/defaults (optional if the flow uses no placeholders)
 
 State fields:
 
@@ -188,7 +188,7 @@ Transition fields:
 - `wait`: optional delay before entering the target state, e.g. "10m"
 - `go`: target state name
 
-Placeholders like `{{repo}}` can appear in strings. They become CLI arguments at `flow start` time.
+Placeholders like `{{repo}}` can appear in strings. Every placeholder must be declared in `flow.args`, and those declarations become CLI arguments at `flow start` time.
 
 Example:
 

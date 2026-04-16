@@ -109,6 +109,31 @@ done:
     assert rendered.description == "Inspect tt-metal and report status."
 
 
+def test_validate_rejects_undeclared_placeholder(tmp_path: Path) -> None:
+    path = write_flow(
+        tmp_path / "bad.yaml",
+        """
+flow:
+  name: demo
+
+start:
+  start: true
+  prompt: Inspect {{repo}}
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+
+    flow = load_flow(path)
+    result = validate_flow(flow)
+
+    assert not result.ok
+    assert any("placeholder '{{repo}}' is used but not declared in flow.args" in item for item in result.errors)
+
+
 def test_parse_start_arguments_renders_path_placeholders(tmp_path: Path) -> None:
     path = write_flow(
         tmp_path / "flow.yaml",

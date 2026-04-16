@@ -14,6 +14,7 @@ from typing import Any
 RESERVED_STATE_NAMES = {"stopped", "needs_help", "interaction"}
 IMPLICIT_TRANSITION_KEEP_WORKING = "keep_working"
 IMPLICIT_TRANSITION_NEEDS_HELP = "needs_help"
+IMPLICIT_TRANSITION_FINISH = "finish"
 DEFAULT_MODE = "yolo"
 DEFAULT_THINKING = "xhigh"
 VALID_THINKING = {"low", "medium", "high", "xhigh"}

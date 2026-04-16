@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from flow.ansi import PALETTE
+from flow import __version__
 from flow.cli import cmd_list, cmd_restart, cmd_top, cmd_validate, cmd_view, main, run_top_mode
 from flow.common import format_utc, utc_now
 from flow.render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
@@ -130,6 +131,14 @@ done:
     assert "Start the demo flow for a single repo." in out
     assert "--path PATH" in out
     assert "__PATH__" not in out
+
+
+def test_main_version_prints_and_exits(capsys: object) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"flow {__version__}"
 
 
 def test_main_list_migrates_legacy_db_without_daemon_events(tmp_path: Path, monkeypatch: object, capsys: object) -> None:

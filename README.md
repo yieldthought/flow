@@ -95,8 +95,8 @@ The main idea is simple:
 
 - a flow is a graph of named states
 - each state can give the agent a prompt
-- each state has outgoing transitions
-- after a turn, the agent chooses the next transition in JSON
+- each non-end state has outgoing transitions
+- after a turn, the agent chooses the next transition or terminal action in JSON
 - the runtime moves the agent, waits, pauses, or asks for help as needed
 - every agent is running in a tmux session you can attach to and view or interact with if you have to
 
@@ -175,12 +175,12 @@ Top-level `flow:` fields:
 State fields:
 
 - `start: true`: marks a start state (optional)
-- `end: true`: marks an end state (optional)
+- `end: true`: marks a terminal state (optional)
 - `wait`: default delay before the state runs (optional)
-- `prompt`: text sent to the agent on entry (optional, state moves directly to transition questions if empty)
+- `prompt`: text sent to the agent on entry (optional; promptless non-end states move directly to transition questions, and promptless end states finish immediately)
 - `mode`: per-state mode override (optional default set in `flow:` header)
 - `thinking`: per-state thinking override (optional, default set in `flow:` header)
-- `transitions`: list of outgoing transitions (optional only if `end: true`)
+- `transitions`: list of outgoing transitions (required unless `end: true`, and forbidden on end states)
 
 Transition fields:
 
@@ -232,17 +232,29 @@ done:
 
 ## How a state runs
 
-When an agent enters a normal state:
+When an agent enters a normal non-end state:
 
 1. Flow sends the state prompt to Codex (optionally after a wait period).
 2. Codex works until its turn completes.
 3. Flow asks Codex to choose one transition in strict JSON.
 4. Flow follows that transition.
 
-There are also two implicit choices that change the status of an agent without changing its state:
+When an agent enters an end state:
+
+1. Flow waits first if the state defines `wait`.
+2. If the end state has no prompt, Flow finishes the agent immediately.
+3. If the end state has a prompt, Flow sends it to Codex.
+4. Flow then asks Codex to choose one terminal action in strict JSON.
+5. Flow either finishes, keeps working in the same end state, or pauses for help.
+
+There are also implicit choices that change the status of an agent without changing its state:
 
 - `keep_working`: stays in the same state and tells Codex to continue working
 - `needs_help`: stops automation for this agent and waits for someone to assist it
+
+Prompted end states also have:
+
+- `finish`: ends the agent successfully from the current end state
 
 If a state has no prompt and exactly one unconditional transition, Flow auto-advances without asking Codex anything. This is useful for pure wait states.
 
@@ -464,7 +476,8 @@ flow shutdown
 ## Notes
 
 - Reserved state names are `stopped`, `needs_help`, and `interaction`.
-- End states cannot define `wait`.
+- End states cannot define `transitions`.
 - A state can only have one unconditional transition, and it must be last.
+- States without transitions must set `end: true` explicitly.
 - Relative paths and `~` in `flow.path` are expanded to absolute paths.
 - Absolute and relative times in `flow show` use your local timezone for display.

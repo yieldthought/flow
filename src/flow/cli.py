@@ -19,6 +19,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from . import __version__
 from .backend import CodexBackend
 from .common import format_utc, parse_wait_seconds, to_json, utc_now
 from .flowfile import flow_to_dict, load_flow, parse_start_arguments, render_flow, validate_flow
@@ -48,6 +49,7 @@ from .ui_server import start_ui_server
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="flow")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate_parser = subparsers.add_parser("validate")

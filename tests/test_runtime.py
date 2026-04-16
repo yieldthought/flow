@@ -138,7 +138,7 @@ done:
     assert backend.prompts[agent_id][0].count("State: check")
 
 
-def test_runtime_handles_keep_working_then_finishes(tmp_path: Path, monkeypatch: Any) -> None:
+def test_runtime_runs_prompted_end_state_before_finishing(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     conn = connect()
     init_db(conn)
@@ -157,6 +157,52 @@ check:
     - go: done
 
 done:
+  prompt: wrap up
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+    backend = FakeBackend()
+    backend.set_script(
+        agent_id,
+        [
+            "worked",
+            '{"choice":"done","reason":"finished"}',
+            "wrapped up",
+            '{"choice":"finish","reason":"all done"}',
+        ],
+    )
+    runtime = Runtime(backend=backend)
+    for _ in range(8):
+        runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["current_state"] == "done"
+    assert agent["ended_at"]
+    assert len(backend.prompts[agent_id]) == 4
+    assert "State: done" in backend.prompts[agent_id][2]
+    assert "kind: terminal_eval" in backend.prompts[agent_id][3]
+
+
+def test_runtime_handles_keep_working_then_finishes_terminal_state(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  prompt: wrap up
   end: true
 """.strip(),
     )
@@ -166,17 +212,20 @@ done:
         agent_id,
         [
             "worked once",
-            '{"choice":"keep_working","reason":"more to do"}',
-            "worked twice",
-            '{"choice":"done","reason":"finished"}',
+            '{"choice":"done","reason":"ready for wrap-up"}',
+            "wrapped once",
+            '{"choice":"keep_working","reason":"one more thing"}',
+            "wrapped twice",
+            '{"choice":"finish","reason":"finished"}',
         ],
     )
     runtime = Runtime(backend=backend)
-    for _ in range(8):
+    for _ in range(12):
         runtime.tick(conn)
     agent = dict(get_agent(conn, agent_id))
     assert agent["current_state"] == "done"
-    assert len(backend.prompts[agent_id]) == 4
+    assert agent["ended_at"]
+    assert len(backend.prompts[agent_id]) == 6
 
 
 def test_runtime_enters_needs_help_and_resume(tmp_path: Path, monkeypatch: Any) -> None:
@@ -198,6 +247,7 @@ check:
     - go: done
 
 done:
+  prompt: wrap up
   end: true
 """.strip(),
     )
@@ -207,23 +257,73 @@ done:
         agent_id,
         [
             "worked",
+            '{"choice":"done","reason":"ready for wrap-up"}',
+            "wrapped",
             '{"choice":"needs_help","reason":"blocked"}',
-            "resumed work",
-            '{"choice":"done","reason":"finished"}',
+            "resumed wrap-up",
+            '{"choice":"finish","reason":"finished"}',
         ],
     )
     runtime = Runtime(backend=backend)
-    for _ in range(4):
+    for _ in range(8):
         runtime.tick(conn)
     agent = dict(get_agent(conn, agent_id))
     assert agent["substate"] == "needs_help"
 
     enqueue_command(conn, agent_id, "resume", {})
     conn.commit()
-    for _ in range(5):
+    for _ in range(6):
         runtime.tick(conn)
     agent = dict(get_agent(conn, agent_id))
     assert agent["current_state"] == "done"
+    assert agent["ended_at"]
+
+
+def test_runtime_promptless_end_state_waits_then_finishes_without_prompt(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  wait: 10m
+  end: true
+""".strip(),
+    )
+    base = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+    now_box = {"value": base}
+    monkeypatch.setattr("flow.runtime.utc_now", lambda: now_box["value"])
+
+    agent_id = create_runtime_agent(conn, flow_path, {})
+    backend = FakeBackend()
+    backend.set_script(agent_id, ["worked", '{"choice":"done","reason":"finished"}'])
+    runtime = Runtime(backend=backend)
+
+    for _ in range(4):
+        runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["current_state"] == "done"
+    assert agent["phase"] == "waiting"
+    assert agent["ready_at"] == format_utc(base + timedelta(minutes=10))
+
+    now_box["value"] = base + timedelta(minutes=10, seconds=1)
+    runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["current_state"] == "done"
+    assert agent["ended_at"]
+    assert len(backend.prompts[agent_id]) == 2
 
 
 def test_runtime_interrupt_move_and_stop(tmp_path: Path, monkeypatch: Any) -> None:

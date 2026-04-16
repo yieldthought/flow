@@ -15,6 +15,7 @@ from typing import Any
 
 from .backend import AgentBackend, CodexBackend
 from .common import (
+    IMPLICIT_TRANSITION_FINISH,
     IMPLICIT_TRANSITION_KEEP_WORKING,
     IMPLICIT_TRANSITION_NEEDS_HELP,
     RESERVED_STATE_NAMES,
@@ -355,15 +356,21 @@ class Runtime:
             update_agent(conn, int(agent["id"]), last_error=f"unknown current state '{agent['current_state']}'")
             return
 
-        if state.end:
-            self._transition_terminal(conn, agent, state.name, choice="state_end", reason="Reached end state")
-            return
-
         if self._handle_delayed_entry(conn, agent, state):
             return
 
         agent["desired_mode"] = state.mode or flow.mode or agent["mode"]
         agent["desired_thinking"] = state.thinking or flow.thinking or agent["thinking"]
+
+        if state.end and not state.prompt and agent["phase"] in {"enter_state", "resume_state"}:
+            self._transition_terminal(
+                conn,
+                agent,
+                state.name,
+                choice=IMPLICIT_TRANSITION_FINISH,
+                reason="Reached terminal end state",
+            )
+            return
 
         auto_transition = _auto_transition(state)
         if auto_transition is not None and agent["phase"] in {"enter_state", "resume_state"}:
@@ -433,6 +440,10 @@ class Runtime:
             prompt = build_continue_prompt(flow, state, agent)
             self._send_turn(conn, agent, prompt, "continue_prompt")
             return
+        if phase == "evaluate_terminal":
+            prompt = build_terminal_prompt(flow, state, agent, allow_keep_working=bool(state.prompt))
+            self._send_turn(conn, agent, prompt, "terminal_eval")
+            return
         if phase == "evaluate_transition":
             prompt = build_transition_prompt(flow, state, agent, allow_keep_working=bool(state.prompt))
             self._send_turn(conn, agent, prompt, "transition_eval")
@@ -467,6 +478,74 @@ class Runtime:
             current_turn_kind="",
             current_turn_started_at="",
         )
+        if kind == "terminal_eval":
+            decision = parse_decision(output_text)
+            if decision.choice == IMPLICIT_TRANSITION_NEEDS_HELP:
+                close_open_state_run(conn, int(agent["id"]))
+                record_agent_event(
+                    conn,
+                    int(agent["id"]),
+                    "decision",
+                    from_state=state.name,
+                    choice=IMPLICIT_TRANSITION_NEEDS_HELP,
+                    reason=decision.reason,
+                )
+                update_agent(
+                    conn,
+                    int(agent["id"]),
+                    substate="needs_help",
+                    phase="paused",
+                    status_message="Needs help",
+                    last_error=decision.reason,
+                )
+                return
+            if decision.choice == IMPLICIT_TRANSITION_KEEP_WORKING:
+                record_agent_event(
+                    conn,
+                    int(agent["id"]),
+                    "decision",
+                    from_state=state.name,
+                    choice=IMPLICIT_TRANSITION_KEEP_WORKING,
+                    reason=decision.reason,
+                )
+                update_agent(conn, int(agent["id"]), phase="continue_state", status_message=decision.reason)
+                return
+            if decision.choice != IMPLICIT_TRANSITION_FINISH:
+                close_open_state_run(conn, int(agent["id"]))
+                record_agent_event(
+                    conn,
+                    int(agent["id"]),
+                    "decision",
+                    from_state=state.name,
+                    choice=IMPLICIT_TRANSITION_NEEDS_HELP,
+                    reason=f"Invalid transition choice '{decision.choice}'",
+                )
+                update_agent(
+                    conn,
+                    int(agent["id"]),
+                    substate="needs_help",
+                    phase="paused",
+                    last_error=f"Invalid transition choice '{decision.choice}'",
+                    status_message="Needs help",
+                )
+                return
+            record_agent_event(
+                conn,
+                int(agent["id"]),
+                "decision",
+                from_state=state.name,
+                to_state=state.name,
+                choice=IMPLICIT_TRANSITION_FINISH,
+                reason=decision.reason,
+            )
+            self._transition_terminal(
+                conn,
+                agent,
+                state.name,
+                choice=IMPLICIT_TRANSITION_FINISH,
+                reason=decision.reason or "Finished terminal end state",
+            )
+            return
         if kind == "transition_eval":
             decision = parse_decision(output_text)
             if decision.choice == IMPLICIT_TRANSITION_NEEDS_HELP:
@@ -531,7 +610,9 @@ class Runtime:
             )
             self._move_to_state(conn, agent, flow, decision.choice, decision.reason, transition=transition)
             return
-        update_agent(conn, int(agent["id"]), phase="evaluate_transition", status_message="Evaluating transitions")
+        next_phase = "evaluate_terminal" if state.end else "evaluate_transition"
+        next_status = "Evaluating terminal state" if state.end else "Evaluating transitions"
+        update_agent(conn, int(agent["id"]), phase=next_phase, status_message=next_status)
 
     def _move_to_state(
         self,
@@ -548,7 +629,7 @@ class Runtime:
         close_open_state_run(conn, int(agent["id"]), ended_at=now)
         next_state = flow.states[state_name]
         wait_text = transition.wait if transition is not None and transition.wait is not None else next_state.wait
-        if next_state.end:
+        if next_state.end and not next_state.prompt and not wait_text:
             update_agent(
                 conn,
                 int(agent["id"]),
@@ -557,6 +638,10 @@ class Runtime:
                 ready_at="",
                 ended_at=now,
                 phase="finished",
+                substate="normal",
+                current_turn_id="",
+                current_turn_kind="",
+                current_turn_started_at="",
                 status_message=reason,
             )
             self.backend.terminate(agent, immediate=False)
@@ -765,6 +850,28 @@ def build_transition_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, A
         ]
     )
     return _control_wrapped_prompt(agent, "transition_eval", "\n".join(lines))
+
+
+def build_terminal_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any], *, allow_keep_working: bool) -> str:
+    lines = [
+        f"You are evaluating terminal completion for flow '{flow.name}' state '{state.name}'.",
+        "Choose exactly one terminal action name.",
+        "",
+        "Terminal actions:",
+        f"- {IMPLICIT_TRANSITION_FINISH}: choose this if the work for this terminal state is complete and the agent should finish.",
+        f"- {IMPLICIT_TRANSITION_NEEDS_HELP}: choose this if you are blocked or need human input.",
+    ]
+    if allow_keep_working:
+        lines.append(
+            f"- {IMPLICIT_TRANSITION_KEEP_WORKING}: choose this if more work in the current terminal state is the best action."
+        )
+    lines.extend(
+        [
+            "",
+            'Respond with JSON only in the form {"choice": "<name>", "reason": "<short explanation>"}',
+        ]
+    )
+    return _control_wrapped_prompt(agent, "terminal_eval", "\n".join(lines))
 
 
 def parse_decision(text: str) -> Decision:

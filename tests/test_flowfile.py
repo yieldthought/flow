@@ -40,6 +40,25 @@ needs_help:
     assert any("reserved name" in item for item in result.errors)
 
 
+def test_validate_allows_start_end_state(tmp_path: Path) -> None:
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+
+run-once:
+  start: true
+  end: true
+  prompt: Finish the one-shot task.
+""".strip(),
+    )
+
+    flow = load_flow(path)
+
+    assert validate_flow(flow).ok
+
+
 def test_load_flow_defaults_missing_version_to_one(tmp_path: Path) -> None:
     path = write_flow(
         tmp_path / "flow.yaml",
@@ -183,7 +202,7 @@ done:
     assert parse_wait_seconds(rendered.states["check"].wait or "") == 12 * 60
 
 
-def test_validate_rejects_wait_before_end_state(tmp_path: Path) -> None:
+def test_validate_rejects_end_state_transitions(tmp_path: Path) -> None:
     path = write_flow(
         tmp_path / "bad.yaml",
         """
@@ -191,18 +210,38 @@ flow:
   name: demo
   version: 1
 
-check:
-  start: true
-  prompt: hi
-  transitions:
-    - wait: 10m
-      go: done
-
 done:
+  start: true
+  end: true
+  prompt: final work
+  transitions:
+    - go: elsewhere
+
+elsewhere:
   end: true
 """.strip(),
     )
     flow = load_flow(path)
     result = validate_flow(flow)
     assert not result.ok
-    assert any("cannot wait before entering end state" in item for item in result.errors)
+    assert any("cannot define transitions" in item for item in result.errors)
+
+
+def test_validate_rejects_state_without_transitions_or_end(tmp_path: Path) -> None:
+    path = write_flow(
+        tmp_path / "bad.yaml",
+        """
+flow:
+  name: demo
+
+check:
+  start: true
+  prompt: hi
+""".strip(),
+    )
+
+    flow = load_flow(path)
+    result = validate_flow(flow)
+
+    assert not result.ok
+    assert any("set 'end: true' for clarity" in item for item in result.errors)

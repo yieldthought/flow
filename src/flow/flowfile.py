@@ -149,23 +149,18 @@ def validate_flow(flow: FlowSpec) -> ValidationResult:
     for state in flow.states.values():
         if state.name in RESERVED_STATE_NAMES:
             errors.append(f"state '{state.name}' uses a reserved name")
-        if state.start and state.end:
-            errors.append(f"state '{state.name}' cannot be both start and end")
-        if state.end and state.wait:
-            errors.append(f"end state '{state.name}' cannot define wait")
+        if state.end and state.transitions:
+            errors.append(f"end state '{state.name}' cannot define transitions")
         if not state.end and not state.transitions:
-            errors.append(f"state '{state.name}' must define at least one transition")
+            errors.append(
+                f"state '{state.name}' must define at least one transition or set 'end: true' for clarity"
+            )
         _validate_wait_literal(state.wait, f"state '{state.name}'", errors)
         unconditional_seen = 0
         for index, transition in enumerate(state.transitions):
             if transition.target not in flow.states:
                 errors.append(
                     f"state '{state.name}' transition {index + 1} targets unknown state '{transition.target}'"
-                )
-            target_state = flow.states.get(transition.target)
-            if transition.wait and target_state is not None and target_state.end:
-                errors.append(
-                    f"state '{state.name}' transition {index + 1} cannot wait before entering end state '{transition.target}'"
                 )
             _validate_wait_literal(
                 transition.wait,

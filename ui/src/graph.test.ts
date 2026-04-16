@@ -13,6 +13,7 @@ function makeSnapshot(): OverviewSnapshot {
     },
     flow: {
       name: "demo",
+      description: "Track a demo run.",
       counts: { waiting: 1, working: 1, paused: 0, needs_help: 0 },
       states: [
         {

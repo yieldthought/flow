@@ -165,6 +165,7 @@ A flow file has:
 Top-level `flow:` fields:
 
 - `name`: flow name
+- `description`: human-readable summary shown in UI headers and `flow start <file> --help` (optional)
 - `version`: of the flow file format (optional, currently always `1`)
 - `path`: initial working directory for new agents (optional, defaults to the current working directory where `flow start` is run)
 - `mode`: default Codex permissions mode (optional, defaults to `yolo`, other options are `danger-full-access`, `full-auto`, `workspace-write`, `read-only`)
@@ -194,6 +195,7 @@ Example:
 ```yaml
 flow:
   name: check-ci
+  description: Poll a GitHub Actions run until it passes or fails.
   path: ~/project
   args:
     run_url:

@@ -110,6 +110,7 @@ def test_parse_start_arguments_help_uses_path_metavar(tmp_path: Path, capsys: ob
 flow:
   name: demo
   version: 1
+  description: Start the demo flow for a single repo.
 
 start:
   start: true
@@ -126,6 +127,7 @@ done:
         parse_start_arguments(load_flow(path), None, ["--help"])
 
     out = capsys.readouterr().out
+    assert "Start the demo flow for a single repo." in out
     assert "--path PATH" in out
     assert "__PATH__" not in out
 

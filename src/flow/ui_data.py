@@ -35,6 +35,7 @@ def build_overview_snapshot(conn: Any, flow_name: str) -> dict[str, Any]:
         raise ValueError(f"unknown or inactive flow '{flow_name}'")
 
     snapshots = _snapshot_flows(conn, agents)
+    flow_description = _merged_flow_description(snapshots)
     topology = _merged_topology(agents, snapshots)
     state_rows: dict[str, dict[str, list[dict[str, Any]]]] = {
         state["name"]: {"waiting": [], "working": [], "paused": [], "needs_help": [], "finished": []}
@@ -59,6 +60,7 @@ def build_overview_snapshot(conn: Any, flow_name: str) -> dict[str, Any]:
         "runtime": _runtime_summary(conn),
         "flow": {
             "name": flow_name,
+            "description": flow_description,
             "counts": counts,
             "states": [
                 {
@@ -183,6 +185,13 @@ def _snapshot_flows(conn: Any, agents: list[dict[str, Any]]) -> dict[int, FlowSp
         snapshot = get_flow_snapshot(conn, snapshot_id)
         flows[snapshot_id] = flow_from_dict(json.loads(str(snapshot["snapshot_json"])))
     return flows
+
+
+def _merged_flow_description(snapshots: dict[int, FlowSpec]) -> str:
+    for flow in snapshots.values():
+        if flow.description:
+            return flow.description
+    return ""
 
 
 def _merged_topology(agents: list[dict[str, Any]], snapshots: dict[int, FlowSpec]) -> dict[str, Any]:

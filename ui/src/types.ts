@@ -142,6 +142,7 @@ export interface OverviewSnapshot {
   runtime: RuntimeSummary;
   flow: {
     name: string;
+    description: string;
     counts: FlowCounts;
     states: FlowState[];
     edges: FlowEdge[];

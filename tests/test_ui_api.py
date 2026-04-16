@@ -61,6 +61,7 @@ def test_build_overview_snapshot_groups_agent_rows(tmp_path: Path, monkeypatch: 
         """
 flow:
   name: demo
+  description: Watch a site and summarize what changed.
   args:
     site:
       default: news.ycombinator.com
@@ -84,6 +85,7 @@ done:
 
     snapshot = build_overview_snapshot(conn, "demo")
 
+    assert snapshot["flow"]["description"] == "Watch a site and summarize what changed."
     assert snapshot["flow"]["counts"] == {
         "waiting": 1,
         "working": 1,
@@ -112,6 +114,7 @@ def test_build_focus_snapshot_aggregates_state_visits_and_edges(tmp_path: Path, 
         """
 flow:
   name: demo
+  description: Show the current flow in the UI.
 
 check:
   start: true
@@ -187,6 +190,7 @@ def test_build_overview_snapshot_includes_wait_in_edge_labels(tmp_path: Path, mo
         """
 flow:
   name: demo
+  description: Show the current flow in the UI.
 
 check:
   start: true
@@ -219,6 +223,7 @@ def test_ui_api_overview_endpoint_returns_flow_snapshot(tmp_path: Path, monkeypa
         """
 flow:
   name: demo
+  description: Show the current flow in the UI.
 
 check:
   start: true
@@ -238,6 +243,7 @@ done:
     assert response.status_code == 200
     payload = response.json()
     assert payload["flow"]["name"] == "demo"
+    assert payload["flow"]["description"] == "Show the current flow in the UI."
     assert payload["flow"]["states"][0]["name"] == "check"
 
 

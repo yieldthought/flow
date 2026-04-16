@@ -51,6 +51,7 @@ class StateSpec:
 @dataclass(frozen=True)
 class FlowSpec:
     name: str
+    description: str | None
     version: int
     path: str | None
     mode: str | None
@@ -104,6 +105,9 @@ def load_flow(path: str | Path) -> FlowSpec:
     name = flow_block.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("flow.name must be a non-empty string")
+    description = flow_block.get("description")
+    if description is not None and not isinstance(description, str):
+        raise ValueError("flow.description must be a string when provided")
     path_value = flow_block.get("path")
     if path_value is not None and not isinstance(path_value, str):
         raise ValueError("flow.path must be a string when provided")
@@ -116,6 +120,7 @@ def load_flow(path: str | Path) -> FlowSpec:
 
     return FlowSpec(
         name=name.strip(),
+        description=description.strip() if isinstance(description, str) and description.strip() else None,
         version=version,
         path=path_value,
         mode=mode,
@@ -231,6 +236,7 @@ def render_flow(flow: FlowSpec, values: dict[str, str], cwd_override: str | None
         rendered_path = expand_path(rendered_path)
     return FlowSpec(
         name=_render_string(flow.name, values),
+        description=_render_string(flow.description, values) if flow.description else None,
         version=flow.version,
         path=rendered_path,
         mode=flow.mode or DEFAULT_MODE,
@@ -244,7 +250,7 @@ def render_flow(flow: FlowSpec, values: dict[str, str], cwd_override: str | None
 
 def parse_start_arguments(flow: FlowSpec, state_token: str | None, argv: list[str]) -> tuple[str, dict[str, str], str]:
     selected_state, remainder = _resolve_state_token(flow, state_token, argv)
-    parser = argparse.ArgumentParser(prog="flow start", add_help=False)
+    parser = argparse.ArgumentParser(prog="flow start", description=flow.description, add_help=False)
 
     arg_names = sorted(set(flow.placeholders) | set(flow.args))
     for name in arg_names:
@@ -277,6 +283,7 @@ def parse_start_arguments(flow: FlowSpec, state_token: str | None, argv: list[st
 def flow_to_dict(flow: FlowSpec) -> dict[str, Any]:
     return {
         "name": flow.name,
+        "description": flow.description,
         "version": flow.version,
         "path": flow.path,
         "mode": flow.mode,
@@ -309,6 +316,7 @@ def flow_to_dict(flow: FlowSpec) -> dict[str, Any]:
 def flow_from_dict(payload: dict[str, Any]) -> FlowSpec:
     return FlowSpec(
         name=str(payload["name"]),
+        description=None if payload.get("description") is None else str(payload.get("description")),
         version=int(payload["version"]),
         path=payload.get("path"),
         mode=payload.get("mode"),

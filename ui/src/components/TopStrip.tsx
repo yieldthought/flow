@@ -4,12 +4,16 @@ import type { OverviewSnapshot } from "../types";
 export function TopStrip({ snapshot }: { snapshot: OverviewSnapshot }) {
   const { runtime, flow } = snapshot;
   const banner = runtime.diagnostics[0];
+  const description = flow.description.trim();
 
   return (
     <header className="top-strip">
       <div className="top-strip__group">
         <div className="eyebrow">flow</div>
-        <div className="top-strip__title">{flow.name}</div>
+        <div className="top-strip__identity">
+          <div className="top-strip__title">{flow.name}</div>
+          {description ? <div className="top-strip__description">{description}</div> : null}
+        </div>
       </div>
       <div className="top-strip__group">
         <StatusPill tone={runtime.active ? "ok" : "error"} label={runtime.active ? "runtime active" : "runtime shut down"} />

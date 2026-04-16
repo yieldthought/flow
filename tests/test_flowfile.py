@@ -64,6 +64,32 @@ done:
     assert validate_flow(flow).ok
 
 
+def test_load_flow_parses_description_and_renders_placeholders(tmp_path: Path) -> None:
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  description: Inspect {{repo}} and report status.
+
+start:
+  start: true
+  prompt: Hello
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+
+    flow = load_flow(path)
+    rendered = render_flow(flow, {"repo": "tt-metal"}, cwd_override=str(tmp_path))
+
+    assert flow.description == "Inspect {{repo}} and report status."
+    assert rendered.description == "Inspect tt-metal and report status."
+
+
 def test_parse_start_arguments_renders_path_placeholders(tmp_path: Path) -> None:
     path = write_flow(
         tmp_path / "flow.yaml",

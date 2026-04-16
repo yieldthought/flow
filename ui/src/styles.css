@@ -94,6 +94,11 @@ select {
   flex-wrap: wrap;
 }
 
+.top-strip__identity {
+  display: grid;
+  gap: 2px;
+}
+
 .eyebrow {
   text-transform: uppercase;
   letter-spacing: 0.18em;
@@ -105,6 +110,13 @@ select {
   font-size: 24px;
   font-weight: 620;
   letter-spacing: -0.03em;
+}
+
+.top-strip__description {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.35;
+  max-width: 54ch;
 }
 
 .summary-pill {

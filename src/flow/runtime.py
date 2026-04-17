@@ -18,6 +18,7 @@ from .common import (
     IMPLICIT_TRANSITION_FINISH,
     IMPLICIT_TRANSITION_KEEP_WORKING,
     IMPLICIT_TRANSITION_NEEDS_HELP,
+    IMPLICIT_TRANSITION_WAIT_FOR_CHILD,
     RESERVED_STATE_NAMES,
     current_actor,
     format_utc,
@@ -25,9 +26,11 @@ from .common import (
     normalize_implicit_transition_name,
     parse_wait_seconds,
     parse_utc,
+    pending_state_payload,
     utc_now,
 )
 from .flowfile import FlowSpec, StateSpec, TransitionSpec, flow_from_dict
+from .paths import agent_scratchpad_dir
 from .scratchpad import remove_scratchpad_dir, scratchpad_path_text
 from .store import (
     clear_daemon_status,
@@ -60,6 +63,7 @@ class Decision:
     choice: str
     reason: str
     raw_json: str
+    child_ids: tuple[int, ...] = ()
 
 
 class Runtime:
@@ -145,8 +149,13 @@ class Runtime:
                 "last_error": "",
             }
             if agent["substate"] == "normal":
-                if phase == "waiting":
+                pending_kind = _pending_kind(agent)
+                if phase in {"waiting", "waiting_children"}:
                     fields["phase"] = "waiting"
+                    if phase == "waiting_children":
+                        fields["phase"] = "waiting_children"
+                elif pending_kind == "children_wake":
+                    fields["phase"] = "resume_state"
                 elif phase == "enter_state" and not agent["thread_id"] and not agent["last_prompt_sent_at"]:
                     fields["phase"] = "enter_state"
                 else:
@@ -224,14 +233,24 @@ class Runtime:
             return
         if kind == "resume":
             fields = {"substate": "normal", "shutdown_mode": ""}
-            remaining = _waiting_remaining_seconds(agent)
-            if remaining > 0:
-                fields["phase"] = "waiting"
+            child_wait = _child_wait_state(conn, agent)
+            if child_wait is not None:
+                pending = [item["id"] for item in child_wait["pending"]]
+                if pending:
+                    fields["phase"] = "waiting_children"
+                    fields["status_message"] = _waiting_children_status(pending)
+                else:
+                    self._queue_children_wake(conn, agent, child_wait)
+                    fields = {}
             else:
-                if agent.get("ready_at"):
-                    fields["ready_at"] = ""
-                fields["phase"] = "resume_state"
-                open_state_run(conn, agent_id, agent["current_state"])
+                remaining = _waiting_remaining_seconds(agent)
+                if remaining > 0:
+                    fields["phase"] = "waiting"
+                else:
+                    if agent.get("ready_at"):
+                        fields["ready_at"] = ""
+                    fields["phase"] = "resume_state"
+                    open_state_run(conn, agent_id, agent["current_state"])
             record_agent_event(
                 conn,
                 agent_id,
@@ -239,7 +258,8 @@ class Runtime:
                 state_name=agent["current_state"],
                 reason=f"Resumed by {actor}",
             )
-            update_agent(conn, agent_id, **fields)
+            if fields:
+                update_agent(conn, agent_id, **fields)
             return
         if kind == "wake":
             if not agent.get("ready_at"):
@@ -359,6 +379,9 @@ class Runtime:
             update_agent(conn, int(agent["id"]), last_error=f"unknown current state '{agent['current_state']}'")
             return
 
+        if self._handle_waiting_children(conn, agent, state):
+            return
+
         if self._handle_delayed_entry(conn, agent, state):
             return
 
@@ -433,6 +456,10 @@ class Runtime:
             update_agent(conn, int(agent["id"]), shutdown_mode="", phase="resume_state")
             return
         if phase in {"enter_state", "resume_state"}:
+            wake_prompt = _children_wake_prompt(flow, state, agent)
+            if wake_prompt:
+                self._send_turn(conn, agent, wake_prompt, "children_wake")
+                return
             if state.prompt:
                 prompt = build_state_prompt(flow, state, agent)
                 self._send_turn(conn, agent, prompt, "state_prompt" if phase == "enter_state" else "resume_prompt")
@@ -517,6 +544,9 @@ class Runtime:
                 )
                 update_agent(conn, int(agent["id"]), phase="continue_state", status_message=decision.reason)
                 return
+            if decision.choice == IMPLICIT_TRANSITION_WAIT_FOR_CHILD:
+                self._park_for_child_wait(conn, agent, state, decision)
+                return
             if decision.choice != IMPLICIT_TRANSITION_FINISH:
                 close_open_state_run(conn, int(agent["id"]))
                 record_agent_event(
@@ -585,6 +615,9 @@ class Runtime:
                 )
                 update_agent(conn, int(agent["id"]), phase="continue_state", status_message=decision.reason)
                 return
+            if decision.choice == IMPLICIT_TRANSITION_WAIT_FOR_CHILD:
+                self._park_for_child_wait(conn, agent, state, decision)
+                return
             transition = _selected_transition(state, decision.choice)
             if transition is None:
                 close_open_state_run(conn, int(agent["id"]))
@@ -617,9 +650,43 @@ class Runtime:
             )
             self._move_to_state(conn, agent, flow, decision.choice, decision.reason, transition=transition)
             return
+        if kind == "children_wake":
+            update_agent(conn, int(agent["id"]), pending_state_json="")
         next_phase = "evaluate_terminal" if state.end else "evaluate_transition"
         next_status = "Evaluating terminal state" if state.end else "Evaluating transitions"
         update_agent(conn, int(agent["id"]), phase=next_phase, status_message=next_status)
+
+    def _park_for_child_wait(self, conn: Any, agent: dict[str, Any], state: StateSpec, decision: Decision) -> None:
+        agent_id = int(agent["id"])
+        child_wait = _child_wait_snapshot(conn, decision.child_ids)
+        pending = [item["id"] for item in child_wait["pending"]]
+        if pending:
+            now = format_utc(utc_now())
+            close_open_state_run(conn, agent_id, ended_at=now)
+            record_agent_event(
+                conn,
+                agent_id,
+                "wait_children",
+                state_name=state.name,
+                reason=decision.reason,
+                payload={"child_ids": list(decision.child_ids), "pending": pending, "started_at": now},
+            )
+            update_agent(
+                conn,
+                agent_id,
+                phase="waiting_children",
+                status_message=_waiting_children_status(pending),
+                pending_state_json=json.dumps(
+                    {"kind": "waiting_children", "child_ids": list(decision.child_ids), "started_at": now},
+                    sort_keys=True,
+                ),
+            )
+            return
+        self._queue_children_wake(
+            conn,
+            agent,
+            {"started_at": format_utc(utc_now()), "pending": [], "finished": child_wait["finished"]},
+        )
 
     def _move_to_state(
         self,
@@ -705,6 +772,53 @@ class Runtime:
         snapshot = get_flow_snapshot(conn, int(agent["flow_snapshot_id"]))
         payload = json.loads(snapshot["snapshot_json"])
         return flow_from_dict(payload)
+
+    def _handle_waiting_children(self, conn: Any, agent: dict[str, Any], state: StateSpec) -> bool:
+        if agent["phase"] != "waiting_children":
+            return False
+        child_wait = _child_wait_state(conn, agent)
+        if child_wait is None:
+            update_agent(conn, int(agent["id"]), phase="resume_state", status_message="Child wait metadata was lost")
+            open_state_run(conn, int(agent["id"]), state.name)
+            return False
+        pending = [item["id"] for item in child_wait["pending"]]
+        if pending:
+            status = _waiting_children_status(pending)
+            if status != str(agent.get("status_message") or ""):
+                update_agent(conn, int(agent["id"]), status_message=status)
+            return True
+        self._queue_children_wake(conn, agent, child_wait)
+        return True
+
+    def _queue_children_wake(self, conn: Any, agent: dict[str, Any], child_wait: dict[str, Any]) -> None:
+        agent_id = int(agent["id"])
+        state_name = str(agent["current_state"])
+        finished = child_wait["finished"]
+        record_agent_event(
+            conn,
+            agent_id,
+            "wake_children",
+            state_name=state_name,
+            reason=_children_wake_reason(finished),
+            payload={"children": finished, "started_at": child_wait["started_at"]},
+        )
+        update_agent(
+            conn,
+            agent_id,
+            phase="resume_state",
+            status_message="Children finished",
+            pending_state_json=json.dumps(
+                {
+                    "kind": "children_wake",
+                    "children": finished,
+                    "started_at": child_wait["started_at"],
+                    "add_dirs": [item["scratchpad_dir"] for item in finished if item.get("scratchpad_dir")],
+                },
+                sort_keys=True,
+            ),
+        )
+        if latest_open_state_run(conn, agent_id) is None:
+            open_state_run(conn, agent_id, state_name)
 
     def _handle_delayed_entry(self, conn: Any, agent: dict[str, Any], state: StateSpec) -> bool:
         remaining = _waiting_remaining_seconds(agent)
@@ -883,6 +997,10 @@ def build_transition_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, A
             "",
             "Implicit transitions:",
             f"- {IMPLICIT_TRANSITION_NEEDS_HELP}: choose this if you are blocked or need human input.",
+            (
+                f"- {IMPLICIT_TRANSITION_WAIT_FOR_CHILD}: choose this if you started one or more child agents and"
+                " want the runtime to wake you after they all finish. Include a 'child_ids' list alongside 'choice'."
+            ),
         ]
     )
     if allow_keep_working:
@@ -892,7 +1010,10 @@ def build_transition_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, A
     lines.extend(
         [
             "",
-            'Respond with JSON only in the form {"choice": "<name>", "reason": "<short explanation>"}',
+            'Respond with JSON only in the form {"choice": "<name>", "reason": "<short explanation>"}.',
+            (
+                f'When choosing {IMPLICIT_TRANSITION_WAIT_FOR_CHILD}, also include "child_ids": [17, 18].'
+            ),
         ]
     )
     return _control_wrapped_prompt(flow, agent, "transition_eval", "\n".join(lines))
@@ -915,6 +1036,10 @@ def build_terminal_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any
             "Terminal actions:",
             f"- {IMPLICIT_TRANSITION_FINISH}: choose this if the work for this terminal state is complete and the agent should finish.",
             f"- {IMPLICIT_TRANSITION_NEEDS_HELP}: choose this if you are blocked or need human input.",
+            (
+                f"- {IMPLICIT_TRANSITION_WAIT_FOR_CHILD}: choose this if you started one or more child agents and"
+                " want the runtime to wake you after they all finish. Include a 'child_ids' list alongside 'choice'."
+            ),
         ]
     )
     if allow_keep_working:
@@ -924,10 +1049,55 @@ def build_terminal_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any
     lines.extend(
         [
             "",
-            'Respond with JSON only in the form {"choice": "<name>", "reason": "<short explanation>"}',
+            'Respond with JSON only in the form {"choice": "<name>", "reason": "<short explanation>"}.',
+            (
+                f'When choosing {IMPLICIT_TRANSITION_WAIT_FOR_CHILD}, also include "child_ids": [17, 18].'
+            ),
         ]
     )
     return _control_wrapped_prompt(flow, agent, "terminal_eval", "\n".join(lines))
+
+
+def _children_wake_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any]) -> str:
+    payload = pending_state_payload(agent)
+    if payload.get("kind") != "children_wake":
+        return ""
+    lines = [
+        f"Flow: {flow.name}",
+        f"State: {state.name}",
+        "",
+        "Child flows have finished.",
+        "",
+    ]
+    children = payload.get("children") or []
+    if isinstance(children, list) and children:
+        lines.append("Children finished:")
+        for item in children:
+            if not isinstance(item, dict):
+                continue
+            child_id = str(item.get("id") or "?")
+            flow_name = str(item.get("flow") or "").strip()
+            label = f"agent {child_id}"
+            if flow_name:
+                label += f" ({flow_name})"
+            lines.append(f"- {label} -> {_child_result_label(item)}")
+        lines.append("")
+    scratchpads = [str(item.get("scratchpad_path") or "").strip() for item in children if isinstance(item, dict)]
+    scratchpads = [item for item in scratchpads if item]
+    if scratchpads:
+        lines.append("Scratchpads available for this turn:")
+        for path in scratchpads:
+            lines.append(f"- {path}")
+        lines.extend(["", "Treat child scratchpads as read-only context for this turn.", ""])
+    lines.extend(
+        [
+            _scratchpad_file_line(agent),
+            "",
+            "Inspect the child results, read any relevant scratchpads, update your own scratchpad if needed, and continue the current state.",
+            "Do not choose a transition yet; the runtime will ask right after this turn.",
+        ]
+    )
+    return _control_wrapped_prompt(flow, agent, "children_wake", "\n".join(lines))
 
 
 def parse_decision(text: str) -> Decision:
@@ -939,17 +1109,48 @@ def parse_decision(text: str) -> Decision:
     payload = json.loads(raw)
     if not isinstance(payload, dict):
         raise ValueError("transition evaluation did not return a JSON object")
-    choice = payload.get("choice")
     reason = payload.get("reason") or ""
-    if not isinstance(choice, str) or not choice.strip():
-        raise ValueError("transition evaluation JSON is missing 'choice'")
     if not isinstance(reason, str):
         raise ValueError("transition evaluation JSON has non-string 'reason'")
+
+    choice = payload.get("choice")
+    if not isinstance(choice, str) or not choice.strip():
+        raise ValueError("transition evaluation JSON is missing 'choice'")
+    normalized = normalize_implicit_transition_name(choice)
+    child_ids: tuple[int, ...] = ()
+    if normalized == IMPLICIT_TRANSITION_WAIT_FOR_CHILD:
+        child_ids = _parse_child_ids(payload.get("child_ids"))
     return Decision(
-        choice=normalize_implicit_transition_name(choice),
+        choice=normalized,
         reason=reason.strip(),
         raw_json=raw,
+        child_ids=child_ids,
     )
+
+
+def _parse_child_ids(value: Any) -> tuple[int, ...]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{IMPLICIT_TRANSITION_WAIT_FOR_CHILD} requires a non-empty 'child_ids' list")
+    ordered: list[int] = []
+    seen: set[int] = set()
+    for item in value:
+        try:
+            child_id = int(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{IMPLICIT_TRANSITION_WAIT_FOR_CHILD} child_ids must contain integers"
+            ) from exc
+        if child_id <= 0:
+            raise ValueError(
+                f"{IMPLICIT_TRANSITION_WAIT_FOR_CHILD} child_ids must contain positive integers"
+            )
+        if child_id in seen:
+            continue
+        seen.add(child_id)
+        ordered.append(child_id)
+    if not ordered:
+        raise ValueError(f"{IMPLICIT_TRANSITION_WAIT_FOR_CHILD} requires at least one child id")
+    return tuple(ordered)
 
 
 def _thread_name_result_recorded(conn: Any, agent_id: int) -> bool:
@@ -1041,6 +1242,69 @@ def _initial_setup_guidance(agent: dict[str, Any]) -> str:
             "- Notes: optional extra state worth carrying forward",
         ]
     )
+
+
+def _pending_kind(agent: dict[str, Any]) -> str:
+    return str(pending_state_payload(agent).get("kind") or "")
+
+
+def _child_wait_state(conn: Any, agent: dict[str, Any]) -> dict[str, Any] | None:
+    payload = pending_state_payload(agent)
+    if payload.get("kind") != "waiting_children":
+        return None
+    child_ids = payload.get("child_ids") or []
+    if not isinstance(child_ids, list):
+        return None
+    started_at = str(payload.get("started_at") or "")
+    return {"started_at": started_at, **_child_wait_snapshot(conn, child_ids)}
+
+
+def _child_wait_snapshot(conn: Any, child_ids: list[int] | tuple[int, ...]) -> dict[str, list[dict[str, Any]]]:
+    pending: list[dict[str, Any]] = []
+    finished: list[dict[str, Any]] = []
+    for child_id in child_ids:
+        row = get_agent(conn, int(child_id))
+        if row is None:
+            finished.append({"id": int(child_id), "flow": "", "end_state": None, "status": "unknown"})
+            continue
+        agent = dict(row)
+        if not agent.get("ended_at"):
+            pending.append({"id": int(child_id), "flow": str(agent.get("flow_name") or "")})
+            continue
+        scratchpad_dir = str(agent_scratchpad_dir(int(child_id)))
+        finished.append(
+            {
+                "id": int(child_id),
+                "flow": str(agent.get("flow_name") or ""),
+                "end_state": str(agent.get("current_state") or "") or None,
+                "status": "stopped" if str(agent.get("current_state") or "") == "stopped" else "finished",
+                "scratchpad_path": scratchpad_path_text(agent),
+                "scratchpad_dir": scratchpad_dir,
+            }
+        )
+    return {"pending": pending, "finished": finished}
+
+
+def _waiting_children_status(child_ids: list[int]) -> str:
+    labels = ", ".join(f"#{child_id}" for child_id in child_ids)
+    return f"Waiting on child agents {labels}"
+
+
+def _children_wake_reason(children: list[dict[str, Any]]) -> str:
+    if not children:
+        return "Children finished"
+    labels = ", ".join(f"#{int(item['id'])}" for item in children if "id" in item)
+    return f"Children finished: {labels}" if labels else "Children finished"
+
+
+def _child_result_label(item: dict[str, Any]) -> str:
+    status = str(item.get("status") or "")
+    end_state = str(item.get("end_state") or "")
+    if status == "unknown":
+        return "(unknown)"
+    if status == "stopped" or end_state == "stopped":
+        return "(stopped)"
+    return end_state or "(finished)"
 
 
 def _scratchpad_file_line(agent: dict[str, Any]) -> str:

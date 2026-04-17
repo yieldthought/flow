@@ -15,6 +15,7 @@ RESERVED_STATE_NAMES = {"stopped", "needs-help", "needs_help", "interaction"}
 IMPLICIT_TRANSITION_KEEP_WORKING = "keep-working"
 IMPLICIT_TRANSITION_NEEDS_HELP = "needs-help"
 IMPLICIT_TRANSITION_FINISH = "finish"
+IMPLICIT_TRANSITION_WAIT_FOR_CHILD = "wait-for-child"
 DEFAULT_MODE = "yolo"
 DEFAULT_THINKING = "xhigh"
 VALID_THINKING = {"low", "medium", "high", "xhigh"}
@@ -73,8 +74,18 @@ def normalize_implicit_transition_name(name: str) -> str:
         "needs_help": IMPLICIT_TRANSITION_NEEDS_HELP,
         IMPLICIT_TRANSITION_NEEDS_HELP: IMPLICIT_TRANSITION_NEEDS_HELP,
         IMPLICIT_TRANSITION_FINISH: IMPLICIT_TRANSITION_FINISH,
+        "wait_for_child": IMPLICIT_TRANSITION_WAIT_FOR_CHILD,
+        IMPLICIT_TRANSITION_WAIT_FOR_CHILD: IMPLICIT_TRANSITION_WAIT_FOR_CHILD,
     }
     return aliases.get(str(name or "").strip(), str(name or "").strip())
+
+
+def pending_state_payload(agent: dict[str, Any]) -> dict[str, Any]:
+    try:
+        payload = json.loads(str(agent.get("pending_state_json") or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def normalize_phase(value: str | None) -> str:

@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from flow.backend import AgentBackend, TurnObservation
 from flow.common import format_utc, utc_now
 from flow.flowfile import flow_to_dict, load_flow, render_flow
@@ -194,6 +196,42 @@ done:
 def test_parse_decision_normalizes_legacy_implicit_transition_aliases() -> None:
     assert parse_decision('{"choice":"needs_help","reason":"blocked"}').choice == "needs-help"
     assert parse_decision('{"choice":"keep_working","reason":"one more thing"}').choice == "keep-working"
+
+
+def test_parse_decision_accepts_wait_for_child_with_child_ids() -> None:
+    decision = parse_decision(
+        '{"choice":"wait-for-child","child_ids":[17,"18",17],"reason":"watch CI"}'
+    )
+
+    assert decision.choice == "wait-for-child"
+    assert decision.child_ids == (17, 18)
+    assert decision.reason == "watch CI"
+
+
+def test_parse_decision_normalizes_legacy_wait_for_child_spelling() -> None:
+    decision = parse_decision(
+        '{"choice":"wait_for_child","child_ids":[17],"reason":"watch CI"}'
+    )
+
+    assert decision.choice == "wait-for-child"
+    assert decision.child_ids == (17,)
+
+
+def test_parse_decision_rejects_action_key() -> None:
+    with pytest.raises(ValueError, match="missing 'choice'"):
+        parse_decision(
+            '{"action":"wait-for-child","child_ids":[17],"reason":"watch CI"}'
+        )
+
+
+def test_parse_decision_requires_child_ids_for_wait_for_child() -> None:
+    with pytest.raises(ValueError, match="child_ids"):
+        parse_decision('{"choice":"wait-for-child","reason":"watch CI"}')
+
+    with pytest.raises(ValueError, match="non-empty"):
+        parse_decision(
+            '{"choice":"wait-for-child","child_ids":[],"reason":"watch CI"}'
+        )
 
 
 def test_runtime_sets_thread_name_once_after_first_completed_turn(tmp_path: Path, monkeypatch: Any) -> None:
@@ -749,6 +787,113 @@ done:
     agent = dict(get_agent(conn, agent_id))
     assert agent["phase"] == "working"
     assert backend.prompts[agent_id]
+
+
+def test_runtime_wait_for_child_parks_and_wakes_in_same_state(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    child_flow_path = write_flow(
+        tmp_path / "child.yaml",
+        """
+flow:
+  name: child
+  version: 1
+  path: .
+
+watch:
+  start: true
+  prompt: monitor the PR
+  transitions:
+    - go: success
+
+success:
+  end: true
+""".strip(),
+    )
+    parent_flow_path = write_flow(
+        tmp_path / "parent.yaml",
+        """
+flow:
+  name: parent
+  version: 1
+  path: .
+
+watch-ci:
+  start: true
+  prompt: wait for the child flow to finish
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    child_id = create_runtime_agent(conn, child_flow_path, {})
+    parent_id = create_runtime_agent(conn, parent_flow_path, {})
+
+    class SlowChildBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.poll_counts: dict[int, int] = {}
+
+        def poll_turn(self, agent: dict[str, Any]) -> TurnObservation:
+            agent_id = int(agent["id"])
+            self.poll_counts[agent_id] = self.poll_counts.get(agent_id, 0) + 1
+            if agent_id == child_id and self.poll_counts[agent_id] == 1:
+                return TurnObservation(status="running", thread_id=f"thread-{agent_id}", rollout_path=f"/tmp/fake-{agent_id}.jsonl")
+            return super().poll_turn(agent)
+
+    backend = SlowChildBackend()
+    backend.set_script(child_id, ["child worked", '{"choice":"success","reason":"green"}'])
+    backend.set_script(
+        parent_id,
+        [
+            "started child watch",
+            f'{{"choice":"wait-for-child","child_ids":[{child_id}],"reason":"wait for CI"}}',
+            "child finished cleanly",
+            '{"choice":"done","reason":"all set"}',
+        ],
+    )
+    runtime = Runtime(backend=backend)
+
+    runtime.tick(conn)
+    runtime.tick(conn)
+    runtime.tick(conn)
+    runtime.tick(conn)
+
+    parent = dict(get_agent(conn, parent_id))
+    assert parent["phase"] == "waiting_children"
+    assert '"kind": "waiting_children"' in parent["pending_state_json"]
+    assert parent["current_state"] == "watch-ci"
+
+    runtime.tick(conn)
+    parent = dict(get_agent(conn, parent_id))
+    assert parent["phase"] == "resume_state"
+    assert '"kind": "children_wake"' in parent["pending_state_json"]
+
+    runtime.tick(conn)
+    wake_prompt = backend.prompts[parent_id][-1]
+    assert "Child flows have finished." in wake_prompt
+    assert f"agent {child_id} (child) -> success" in wake_prompt
+    assert f"/agent-{child_id}/scratchpad.md" in wake_prompt
+
+    runtime.tick(conn)
+    parent = dict(get_agent(conn, parent_id))
+    assert parent["phase"] == "evaluate_transition"
+    assert parent["pending_state_json"] == ""
+
+    runtime.tick(conn)
+    runtime.tick(conn)
+    parent = dict(get_agent(conn, parent_id))
+    assert parent["current_state"] == "done"
+    assert parent["ended_at"]
+
+    events = [dict(row) for row in list_agent_events(conn, parent_id)]
+    assert [event["kind"] for event in events if event["kind"] in {"wait_children", "wake_children"}] == [
+        "wait_children",
+        "wake_children",
+    ]
 
 
 def test_runtime_transition_wait_overrides_state_wait(tmp_path: Path, monkeypatch: Any) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from flow.common import parse_wait_seconds
-from flow.flowfile import load_flow, parse_start_arguments, render_flow, validate_flow
+from flow.flowfile import catalog_search_paths, discover_catalog, load_flow, parse_start_arguments, render_flow, validate_flow
 
 
 def write_flow(path: Path, text: str) -> Path:
@@ -270,3 +270,85 @@ check:
 
     assert not result.ok
     assert any("set 'end: true' for clarity" in item for item in result.errors)
+
+
+def test_catalog_search_paths_defaults_when_flow_path_is_unset(tmp_path: Path, monkeypatch: object) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FLOW_PATH", raising=False)
+
+    paths = catalog_search_paths()
+
+    assert paths == (
+        (home / "flows").resolve(),
+        (home / ".flow" / "flows").resolve(),
+        (tmp_path / "flows").resolve(),
+    )
+
+
+def test_discover_catalog_returns_valid_flows_and_reports_broken_duplicates(tmp_path: Path, monkeypatch: object) -> None:
+    root_a = tmp_path / "flows-a"
+    root_b = tmp_path / "flows-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    write_flow(
+        root_a / "watch-pr.yaml",
+        """
+flow:
+  name: watch-pr
+  description: Watch CI on a PR.
+  args:
+    pr:
+      help: Link to the PR to watch
+
+check:
+  start: true
+  prompt: check
+  transitions:
+    - go: success
+
+success:
+  end: true
+""".strip(),
+    )
+    write_flow(
+        root_b / "broken.yaml",
+        """
+flow:
+  name: broken
+
+check:
+  start: true
+  prompt: check
+  transitions:
+    - go: missing
+""".strip(),
+    )
+    write_flow(
+        root_b / "watch-pr.yaml",
+        """
+flow:
+  name: watch-pr
+
+check:
+  start: true
+  prompt: duplicate
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    monkeypatch.setenv("FLOW_PATH", f"{root_a}:{root_b}")
+
+    catalog = discover_catalog()
+
+    assert [item.name for item in catalog.flows] == ["watch-pr"]
+    assert catalog.flows[0].args == {"pr": "Link to the PR to watch"}
+    assert catalog.flows[0].end_states == ("success",)
+    assert len(catalog.broken) == 2
+    assert any("missing" in item.error for item in catalog.broken)
+    assert any("duplicate flow name" in item.error for item in catalog.broken)

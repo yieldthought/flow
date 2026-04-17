@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from .ansi import PALETTE, bold, color
-from .common import duration_seconds, normalize_phase, parse_utc, utc_now
+from .common import duration_seconds, normalize_phase, parse_utc, pending_state_payload, utc_now
 from .flowfile import flow_from_dict
 from .scratchpad import read_scratchpad_text, scratchpad_path_text
 from .store import (
@@ -284,6 +284,9 @@ def _agent_display_fields(conn: Any, agent: dict[str, Any]) -> tuple[str, str, s
         return agent_id, "needs-help", _format_seconds(_state_seconds(conn, agent))
     if agent["substate"] == "interaction":
         return agent_id, "paused", _format_seconds(_state_seconds(conn, agent))
+    child_wait = _child_wait_elapsed(agent)
+    if child_wait > 0:
+        return agent_id, "waiting", _format_seconds(child_wait)
     waiting_seconds = _waiting_seconds(agent)
     if waiting_seconds > 0:
         return agent_id, "waiting", _format_seconds(waiting_seconds)
@@ -371,8 +374,15 @@ def _elapsed_since_start(started_at: str, event_at: str) -> float:
 def _total_waiting_seconds(events: list[dict[str, Any]], agent: dict[str, Any]) -> float:
     cutoff = parse_utc(agent.get("ended_at")) or utc_now()
     total = 0.0
+    child_wait_started: datetime | None = None
     for event in events:
         if event.get("kind") != "delay":
+            if event.get("kind") == "wait_children":
+                child_wait_started = parse_utc(event.get("created_at"))
+            elif event.get("kind") == "wake_children" and child_wait_started is not None:
+                finished = parse_utc(event.get("created_at")) or cutoff
+                total += max(0.0, (finished - child_wait_started).total_seconds())
+                child_wait_started = None
             continue
         started = parse_utc(event.get("created_at"))
         payload = _parse_args_payload(event.get("payload_json", ""))
@@ -381,6 +391,8 @@ def _total_waiting_seconds(events: list[dict[str, Any]], agent: dict[str, Any]) 
             continue
         finished = min(cutoff, ready_at)
         total += max(0.0, (finished - started).total_seconds())
+    if child_wait_started is not None:
+        total += max(0.0, (cutoff - child_wait_started).total_seconds())
     return total
 
 
@@ -393,7 +405,7 @@ def _render_event(event: dict[str, Any], *, state_width: int, pad_day: bool) -> 
     if kind == "decision":
         source = _render_state_column(from_state or state_name or "state", state_width)
         return f"{source} {body}"
-    if kind in {"started", "delay", "pause", "interrupt", "resume", "wake", "needs_help"}:
+    if kind in {"started", "delay", "pause", "interrupt", "resume", "wake", "needs_help", "wait_children", "wake_children"}:
         return f"{_render_state_column(state_name or from_state, state_width)}    {body}"
     return body
 
@@ -425,6 +437,12 @@ def _render_event_body(event: dict[str, Any], *, pad_day: bool) -> str:
         return f"{color('woke', PALETTE.accent)}{_quoted_reason(reason)}"
     if kind == "needs_help":
         return f"{color('needs-help', PALETTE.error, bold=True)}{_quoted_reason(reason)}"
+    if kind == "wait_children":
+        pending = _parse_args_payload(event.get("payload_json", "")).get("pending") or []
+        labels = ", ".join(f"#{int(item)}" for item in pending if str(item).strip())
+        return f"{color('wait-for-child', PALETTE.warn, bold=True)} {labels}".rstrip()
+    if kind == "wake_children":
+        return f"{color('children-finished', PALETTE.ok, bold=True)}{_quoted_reason(reason)}"
     label = kind or "event"
     return f"{color(label, PALETTE.accent)}{_quoted_reason(reason)}"
 
@@ -461,9 +479,19 @@ def _event_state_width(event: dict[str, Any]) -> int:
     kind = str(event.get("kind") or "")
     if kind == "decision":
         return len(str(event.get("from_state") or event.get("state_name") or "state"))
-    if kind in {"started", "delay", "pause", "interrupt", "resume", "wake", "needs_help"}:
+    if kind in {"started", "delay", "pause", "interrupt", "resume", "wake", "needs_help", "wait_children", "wake_children"}:
         return len(str(event.get("state_name") or event.get("from_state") or "state"))
     return 0
+
+
+def _child_wait_elapsed(agent: dict[str, Any]) -> float:
+    phase = normalize_phase(str(agent.get("phase") or ""))
+    if phase != "waiting_children":
+        return 0.0
+    started_at = parse_utc(str(pending_state_payload(agent).get("started_at") or ""))
+    if started_at is None:
+        return 0.0
+    return max(0.0, (utc_now() - started_at).total_seconds())
 
 
 def _show_uses_day_padding(agent: dict[str, Any], events: list[dict[str, Any]]) -> bool:

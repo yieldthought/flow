@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from flow.ansi import PALETTE
 from flow import __version__
-from flow.cli import cmd_list, cmd_restart, cmd_top, cmd_validate, cmd_view, main, run_top_mode
+from flow.cli import cmd_catalog, cmd_list, cmd_restart, cmd_show, cmd_top, cmd_validate, cmd_view, main, run_top_mode
 from flow.common import format_utc, utc_now
 from flow.render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
 from flow.store import (
@@ -24,6 +26,7 @@ from flow.store import (
     record_daemon_event,
     record_flow_snapshot,
     set_meta,
+    update_agent,
 )
 from flow.flowfile import flow_to_dict, load_flow, parse_start_arguments, render_flow
 
@@ -102,6 +105,237 @@ start:
     assert "flow file is valid" in captured.out
     assert f"{bad}:" in captured.err
     assert "missing" in captured.err
+
+
+def test_cmd_catalog_outputs_yaml_and_broken_entries(tmp_path: Path, monkeypatch: object, capsys: object) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    flows_dir = tmp_path / "flows"
+    flows_dir.mkdir()
+    write_flow(
+        flows_dir / "watch-pr.yaml",
+        """
+flow:
+  name: watch-pr
+  description: Watch CI for a PR.
+  args:
+    pr:
+      help: Link to the PR to watch
+
+watch:
+  start: true
+  prompt: watch
+  transitions:
+    - go: success
+
+success:
+  end: true
+""".strip(),
+    )
+    write_flow(
+        flows_dir / "broken.yaml",
+        """
+flow:
+  name: broken
+
+watch:
+  start: true
+  prompt: watch
+  transitions:
+    - go: missing
+""".strip(),
+    )
+    monkeypatch.setenv("FLOW_PATH", str(flows_dir))
+
+    assert cmd_catalog(conn, output_format="yaml", include_broken=True) == 0
+
+    payload = yaml.safe_load(capsys.readouterr().out)
+    assert payload["flows"][0]["name"] == "watch-pr"
+    assert payload["flows"][0]["args"] == {"pr": "Link to the PR to watch"}
+    assert payload["broken"][0]["path"].endswith("broken.yaml")
+
+
+def test_cmd_show_json_reports_waiting_children(tmp_path: Path, capsys: object) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    child_path = write_flow(
+        tmp_path / "child.yaml",
+        """
+flow:
+  name: child
+  path: .
+
+watch:
+  start: true
+  prompt: watch
+  transitions:
+    - go: success
+
+success:
+  end: true
+""".strip(),
+    )
+    parent_path = write_flow(
+        tmp_path / "parent.yaml",
+        """
+flow:
+  name: parent
+  path: .
+
+watch-ci:
+  start: true
+  prompt: wait
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    child_flow = render_flow(load_flow(child_path), {}, cwd_override=str(tmp_path))
+    child_snapshot = record_flow_snapshot(conn, child_flow, str(flow_to_dict(child_flow)))
+    child_id = create_agent(
+        conn,
+        flow_snapshot_id=child_snapshot,
+        flow_name=child_flow.name,
+        source_path=child_flow.source_path,
+        backend="fake",
+        start_state="watch",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json='{"pr":"https://example.com/pr/1"}',
+    )
+    parent_flow = render_flow(load_flow(parent_path), {}, cwd_override=str(tmp_path))
+    parent_snapshot = record_flow_snapshot(conn, parent_flow, str(flow_to_dict(parent_flow)))
+    parent_id = create_agent(
+        conn,
+        flow_snapshot_id=parent_snapshot,
+        flow_name=parent_flow.name,
+        source_path=parent_flow.source_path,
+        backend="fake",
+        start_state="watch-ci",
+        cwd=str(tmp_path),
+        mode="workspace-write",
+        thinking="xhigh",
+        args_json='{"pr":"https://example.com/pr/1"}',
+    )
+    record_agent_event(
+        conn,
+        parent_id,
+        "wait_children",
+        state_name="watch-ci",
+        reason="watch CI",
+        payload={"child_ids": [child_id, 999], "pending": [child_id], "started_at": format_utc(utc_now())},
+    )
+    update_agent(
+        conn,
+        parent_id,
+        phase="waiting_children",
+        pending_state_json=json.dumps({"kind": "waiting_children", "child_ids": [child_id, 999], "started_at": format_utc(utc_now())}),
+        status_message=f"Waiting on child agents #{child_id}",
+    )
+    conn.execute(
+        "UPDATE agents SET current_state='success', phase='finished', ended_at=?, updated_at=? WHERE id=?",
+        (format_utc(utc_now()), format_utc(utc_now()), child_id),
+    )
+    conn.commit()
+
+    assert cmd_show(conn, parent_id, json_output=True) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["id"] == parent_id
+    assert payload["phase"] == "waiting_children"
+    assert payload["waiting_on"]["pending"] == []
+    finished_entries = {item["id"]: item for item in payload["waiting_on"]["finished"]}
+    assert finished_entries[child_id]["end_state"] == "success"
+    assert finished_entries[child_id]["status"] == "finished"
+    assert finished_entries[999]["end_state"] is None
+    assert finished_entries[999]["status"] == "unknown"
+    assert payload["latest_event"]["kind"] == "wait_children"
+
+
+def _create_demo_agent(conn: sqlite3.Connection, tmp_path: Path) -> int:
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  path: .
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: success
+
+success:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(path), {}, cwd_override=str(tmp_path))
+    snapshot = record_flow_snapshot(conn, flow, str(flow_to_dict(flow)))
+    return create_agent(
+        conn,
+        flow_snapshot_id=snapshot,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="start",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+
+
+def test_cmd_show_json_finished_agent_reports_finished_contract(tmp_path: Path, capsys: object) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    agent_id = _create_demo_agent(conn, tmp_path)
+    conn.execute(
+        "UPDATE agents SET current_state='success', phase='finished', ended_at=?, updated_at=? WHERE id=?",
+        (format_utc(utc_now()), format_utc(utc_now()), agent_id),
+    )
+    conn.commit()
+
+    assert cmd_show(conn, agent_id, json_output=True) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["phase"] == "finished"
+    assert payload["end_state"] == "success"
+    assert payload["terminated_reason"] == "finished"
+
+
+def test_cmd_show_json_stopped_agent_reports_stopped_contract(tmp_path: Path, capsys: object) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    agent_id = _create_demo_agent(conn, tmp_path)
+    conn.execute(
+        "UPDATE agents SET current_state='stopped', phase='finished', ended_at=?, updated_at=? WHERE id=?",
+        (format_utc(utc_now()), format_utc(utc_now()), agent_id),
+    )
+    conn.commit()
+
+    assert cmd_show(conn, agent_id, json_output=True) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["phase"] == "stopped"
+    assert payload["end_state"] is None
+    assert payload["terminated_reason"] == "stopped"
+
+
+def test_cmd_show_json_running_agent_has_no_terminated_reason(tmp_path: Path, capsys: object) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    agent_id = _create_demo_agent(conn, tmp_path)
+
+    assert cmd_show(conn, agent_id, json_output=True) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["phase"] not in {"finished", "stopped"}
+    assert payload["end_state"] is None
+    assert payload["terminated_reason"] is None
 
 
 def test_parse_start_arguments_help_uses_path_metavar(tmp_path: Path, capsys: object) -> None:
@@ -801,6 +1035,58 @@ done:
     assert "demo" in text
     assert f"#{agent_id}" in text
     assert "working 00:00:" in text
+
+
+def test_render_list_shows_waiting_children_agents_as_waiting(tmp_path: Path, monkeypatch: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    base = datetime(2026, 4, 17, 15, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("flow.render.utc_now", lambda: base + timedelta(minutes=3))
+    conn = connect()
+    init_db(conn)
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+watch:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(path), {}, cwd_override=str(tmp_path))
+    snapshot_id = record_flow_snapshot(conn, flow, str(flow_to_dict(flow)))
+    agent_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="fake",
+        start_state="watch",
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    update_agent(
+        conn,
+        agent_id,
+        phase="waiting_children",
+        pending_state_json=json.dumps({"kind": "waiting_children", "child_ids": [17], "started_at": format_utc(base)}),
+    )
+    conn.commit()
+
+    text = render_list(conn, [dict(row) for row in conn.execute("SELECT * FROM agents")])
+
+    assert f"#{agent_id}" in text
+    assert "waiting 00:03:00" in text
 
 
 def test_render_list_puts_end_states_last_and_dims_them(tmp_path: Path, monkeypatch: object) -> None:

@@ -19,14 +19,16 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 from . import __version__
 from .backend import CodexBackend
-from .common import format_utc, parse_wait_seconds, to_json, utc_now
-from .flowfile import flow_to_dict, load_flow, parse_start_arguments, render_flow, validate_flow
+from .common import format_utc, parse_wait_seconds, pending_state_payload, to_json, utc_now
+from .flowfile import discover_catalog, flow_to_dict, load_flow, parse_start_arguments, render_flow, validate_flow
 from .paths import ensure_home, logs_dir
 from .render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
 from .runtime import Runtime
-from .scratchpad import ensure_scratchpad_dir
+from .scratchpad import ensure_scratchpad_dir, scratchpad_path_text
 from .store import (
     connect,
     create_agent,
@@ -56,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser("validate")
     validate_parser.add_argument("files", nargs="+")
 
+    catalog_parser = subparsers.add_parser("catalog")
+    catalog_parser.add_argument("--format", choices=("yaml", "json", "text"), default="yaml")
+    catalog_parser.add_argument("--broken", action="store_true")
+
     start_parser = subparsers.add_parser("start")
     start_parser.add_argument("file")
     start_parser.add_argument("state", nargs="?")
@@ -68,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser = subparsers.add_parser("show")
     show_parser.add_argument("agent_id")
     show_parser.add_argument("--top", action="store_true")
+    show_parser.add_argument("--json", action="store_true")
 
     top_parser = subparsers.add_parser("top")
     top_parser.add_argument("flow_name", nargs="?")
@@ -119,13 +126,15 @@ def main(argv: list[str] | None = None) -> int:
         return runtime.run_forever()
     if args.command == "validate":
         return cmd_validate(conn, list(args.files))
+    if args.command == "catalog":
+        return cmd_catalog(conn, output_format=str(args.format), include_broken=bool(args.broken))
     if args.command == "list":
         init_db(conn)
         return cmd_list(conn, args.flow_name, top=bool(args.top))
 
     init_db(conn)
     if args.command == "show":
-        return cmd_show(conn, int(args.agent_id), top=bool(args.top))
+        return cmd_show(conn, int(args.agent_id), top=bool(args.top), json_output=bool(args.json))
     if args.command == "top":
         return cmd_top(conn, args.flow_name, recent=str(args.recent))
     if args.command == "ui":
@@ -188,6 +197,32 @@ def cmd_validate(conn: Any, paths: str | list[str]) -> int:
         else:
             print("flow file is valid")
     return 1 if failed else 0
+
+
+def cmd_catalog(conn: Any, *, output_format: str = "yaml", include_broken: bool = False) -> int:
+    del conn
+    catalog = discover_catalog()
+    flows_payload: list[dict[str, Any]] = []
+    for item in catalog.flows:
+        entry: dict[str, Any] = {"name": item.name}
+        if item.description:
+            entry["description"] = item.description
+        entry["path"] = item.path
+        entry["args"] = dict(item.args)
+        entry["end_states"] = list(item.end_states)
+        flows_payload.append(entry)
+    payload: dict[str, Any] = {"flows": flows_payload}
+    if include_broken:
+        payload["broken"] = [{"path": item.path, "error": item.error} for item in catalog.broken]
+
+    if output_format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=False))
+        return 0
+    if output_format == "text":
+        print(_render_catalog_text(payload))
+        return 0
+    print(yaml.safe_dump(payload, sort_keys=False).strip())
+    return 0
 
 
 def cmd_init(conn: Any) -> int:
@@ -286,10 +321,13 @@ def cmd_list(conn: Any, flow_name: str | None, *, top: bool = False) -> int:
     return 0
 
 
-def cmd_show(conn: Any, agent_id: int, *, top: bool = False) -> int:
+def cmd_show(conn: Any, agent_id: int, *, top: bool = False, json_output: bool = False) -> int:
     row = get_agent(conn, agent_id)
     if row is None:
         print(f"error: unknown agent {agent_id}", file=sys.stderr)
+        return 1
+    if top and json_output:
+        print("error: --json and --top cannot be combined", file=sys.stderr)
         return 1
 
     def render_once() -> str:
@@ -297,6 +335,8 @@ def cmd_show(conn: Any, agent_id: int, *, top: bool = False) -> int:
         if current is None:
             return f"error: unknown agent {agent_id}"
         events = [dict(item) for item in list_agent_events(conn, agent_id)]
+        if json_output:
+            return json.dumps(_show_json_snapshot(conn, dict(current), events), indent=2, sort_keys=False)
         return render_show(conn, dict(current), events)
 
     if top:
@@ -522,6 +562,151 @@ def wait_for_shutdown(conn: Any, flow_name: str, *, stop_daemon: bool, timeout: 
             if status["active"] != "1":
                 return
         time.sleep(0.2)
+
+
+def _render_catalog_text(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    flows = payload.get("flows") or []
+    if not flows:
+        lines.append("No valid flows found.")
+    for item in flows:
+        if lines:
+            lines.append("")
+        lines.append(str(item.get("name") or "flow"))
+        description = str(item.get("description") or "").strip()
+        if description:
+            lines.append(f"  {description}")
+        lines.append(f"  path: {item.get('path')}")
+        args = item.get("args") or {}
+        if args:
+            lines.append("  args:")
+            for name, help_text in args.items():
+                text = str(help_text or "").strip() or "(no help text)"
+                lines.append(f"    {name}: {text}")
+        end_states = item.get("end_states") or []
+        lines.append(f"  end_states: {', '.join(str(state) for state in end_states) if end_states else '-'}")
+    broken = payload.get("broken") or []
+    if broken:
+        if lines:
+            lines.append("")
+        lines.append("Broken:")
+        for item in broken:
+            lines.append(f"- {item.get('path')}: {item.get('error')}")
+    return "\n".join(lines)
+
+
+def _show_json_snapshot(conn: Any, agent: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
+    current_state = str(agent["current_state"])
+    ended_at = agent.get("ended_at")
+    if ended_at:
+        if current_state == "stopped":
+            end_state: str | None = None
+            terminated_reason: str | None = "stopped"
+        else:
+            end_state = current_state
+            terminated_reason = "finished"
+    else:
+        end_state = None
+        terminated_reason = None
+    snapshot: dict[str, Any] = {
+        "id": int(agent["id"]),
+        "flow": str(agent["flow_name"]),
+        "state": current_state,
+        "phase": _show_json_phase(agent),
+        "end_state": end_state,
+        "terminated_reason": terminated_reason,
+        "ready_at": str(agent.get("ready_at") or "") or None,
+        "scratchpad_path": scratchpad_path_text(agent),
+        "args": _json_args(agent.get("args_json", "")),
+        "latest_event": _latest_event_snapshot(events[-1]) if events else None,
+    }
+    waiting_on = _waiting_children_snapshot(conn, agent)
+    if waiting_on is not None:
+        snapshot["waiting_on"] = waiting_on
+    return snapshot
+
+
+def _show_json_phase(agent: dict[str, Any]) -> str:
+    if agent.get("ended_at"):
+        if str(agent.get("current_state") or "") == "stopped":
+            return "stopped"
+        return "finished"
+    substate = str(agent.get("substate") or "")
+    if substate == "needs_help":
+        return "needs_help"
+    if substate == "interaction":
+        return "interaction"
+    return str(agent.get("phase") or "")
+
+
+def _waiting_children_snapshot(conn: Any, agent: dict[str, Any]) -> dict[str, Any] | None:
+    phase = _show_json_phase(agent)
+    payload = pending_state_payload(agent)
+    child_ids = payload.get("child_ids") or []
+    if phase != "waiting_children" or not isinstance(child_ids, list):
+        return None
+    pending: list[int] = []
+    finished: list[dict[str, Any]] = []
+    for item in child_ids:
+        try:
+            child_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        row = get_agent(conn, child_id)
+        if row is None:
+            finished.append({"id": child_id, "end_state": None, "status": "unknown"})
+            continue
+        child = dict(row)
+        if child.get("ended_at"):
+            child_state = str(child.get("current_state") or "")
+            stopped = child_state == "stopped"
+            record: dict[str, Any] = {
+                "id": child_id,
+                "end_state": None if stopped else (child_state or None),
+                "status": "stopped" if stopped else "finished",
+            }
+            finished.append(record)
+            continue
+        pending.append(child_id)
+    return {"pending": pending, "finished": finished}
+
+
+def _latest_event_snapshot(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "at": str(event.get("created_at") or ""),
+        "kind": str(event.get("kind") or ""),
+        "detail": _event_detail(event),
+    }
+
+
+def _event_detail(event: dict[str, Any]) -> str:
+    kind = str(event.get("kind") or "")
+    state_name = str(event.get("state_name") or event.get("from_state") or "")
+    reason = str(event.get("reason") or "").strip()
+    payload = pending_state_payload({"pending_state_json": event.get("payload_json", "{}")})
+    if kind == "started":
+        return f"{state_name} started".strip()
+    if kind == "decision":
+        target = str(event.get("to_state") or event.get("choice") or "").strip()
+        return " ".join(part for part in [state_name or "state", "->", target, reason] if part).strip()
+    if kind == "delay":
+        wait_value = str(payload.get("wait") or "").strip() or "?"
+        return " ".join(part for part in [state_name or "state", "wait for", wait_value] if part).strip()
+    if kind == "wait_children":
+        pending = payload.get("pending") or []
+        labels = ", ".join(f"#{int(item)}" for item in pending if str(item).strip())
+        return f"wait for child {labels}".strip()
+    if kind == "wake_children":
+        return reason or "children finished"
+    return reason or kind
+
+
+def _json_args(text: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def run_top_mode(

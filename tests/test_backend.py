@@ -51,6 +51,25 @@ def test_workspace_write_launch_command_adds_scratchpad_dir(tmp_path: Path, monk
     assert f"--add-dir {tmp_path / '.flow' / 'scratchpads' / 'agent-7'}" in command
 
 
+def test_launch_command_adds_child_scratchpad_dirs_from_pending_state(tmp_path: Path, monkeypatch: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    backend = CodexBackend()
+
+    command = backend._launch_command(
+        {
+            "id": 7,
+            "cwd": "/tmp/work",
+            "mode": "workspace-write",
+            "thinking": "xhigh",
+            "pending_state_json": '{"kind":"children_wake","add_dirs":["/tmp/child-17","/tmp/child-18","/tmp/child-17"]}',
+        }
+    )
+
+    assert "--add-dir /tmp/child-17" in command
+    assert "--add-dir /tmp/child-18" in command
+    assert command.count("--add-dir /tmp/child-17") == 1
+
+
 def test_codex_tui_ready_probe_accepts_standalone_banner() -> None:
     assert _looks_like_codex_tui_ready(
         """

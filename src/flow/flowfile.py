@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,27 @@ class ValidationResult:
     @property
     def ok(self) -> bool:
         return not self.errors
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    name: str
+    description: str | None
+    path: str
+    args: dict[str, str]
+    end_states: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CatalogBrokenEntry:
+    path: str
+    error: str
+
+
+@dataclass(frozen=True)
+class CatalogResult:
+    flows: tuple[CatalogEntry, ...]
+    broken: tuple[CatalogBrokenEntry, ...] = ()
 
 
 def load_flow(path: str | Path) -> FlowSpec:
@@ -302,6 +324,71 @@ def parse_start_arguments(flow: FlowSpec, state_token: str | None, argv: list[st
     return selected_state, values, expand_path(path_value)
 
 
+def catalog_search_paths(cwd: str | Path | None = None) -> tuple[Path, ...]:
+    base = Path(cwd or Path.cwd()).expanduser().resolve()
+    raw = os.environ.get("FLOW_PATH", "").strip()
+    items = raw.split(os.pathsep) if raw else ["~/flows", "~/.flow/flows", "./flows"]
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            path = (base / path).resolve()
+        else:
+            path = path.resolve()
+        if path in seen:
+            continue
+        seen.add(path)
+        resolved.append(path)
+    return tuple(resolved)
+
+
+def discover_catalog(paths: list[str | Path] | None = None) -> CatalogResult:
+    search_paths = [Path(item).expanduser().resolve() for item in (paths or catalog_search_paths())]
+    flows: list[CatalogEntry] = []
+    broken: list[CatalogBrokenEntry] = []
+    seen_names: dict[str, str] = {}
+    seen_paths: set[Path] = set()
+
+    for root in search_paths:
+        for candidate in _catalog_candidates(root):
+            if candidate in seen_paths:
+                continue
+            seen_paths.add(candidate)
+            try:
+                flow = load_flow(candidate)
+            except Exception as exc:
+                broken.append(CatalogBrokenEntry(path=str(candidate), error=str(exc)))
+                continue
+            validation = validate_flow(flow)
+            if validation.errors:
+                broken.append(CatalogBrokenEntry(path=str(candidate), error="; ".join(validation.errors)))
+                continue
+            if flow.name in seen_names:
+                broken.append(
+                    CatalogBrokenEntry(
+                        path=str(candidate),
+                        error=f"duplicate flow name '{flow.name}' shadowed by {seen_names[flow.name]}",
+                    )
+                )
+                continue
+            seen_names[flow.name] = str(candidate)
+            flows.append(
+                CatalogEntry(
+                    name=flow.name,
+                    description=flow.description,
+                    path=str(candidate),
+                    args={name: spec.help for name, spec in flow.args.items()},
+                    end_states=tuple(flow.end_states),
+                )
+            )
+
+    return CatalogResult(flows=tuple(flows), broken=tuple(broken))
+
+
 def flow_to_dict(flow: FlowSpec) -> dict[str, Any]:
     return {
         "name": flow.name,
@@ -521,3 +608,22 @@ def _validate_wait_literal(value: str | None, context: str, errors: list[str]) -
 def _normalize_stored_mode(value: Any) -> Any:
     # Legacy snapshots may still contain read-only from before scratchpads existed.
     return "workspace-write" if value == "read-only" else value
+
+
+def _catalog_candidates(root: Path) -> tuple[Path, ...]:
+    if not root.exists():
+        return ()
+    if root.is_file():
+        return (root,) if root.suffix.lower() in {".yaml", ".yml"} else ()
+    if not root.is_dir():
+        return ()
+    items = sorted(path.resolve() for path in root.rglob("*.yaml"))
+    items.extend(sorted(path.resolve() for path in root.rglob("*.yml")))
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return tuple(ordered)

@@ -49,6 +49,7 @@ $ flow start agi-watcher.yaml --site news.ycombinator.com
 Monitor the situation:
 
 ```bash
+$ flow catalog
 $ flow list
 $ flow list --top
 $ flow top
@@ -65,6 +66,7 @@ Check what a specific agent has been up to:
 
 ```bash
 $ flow show 6
+$ flow show 6 --json
 $ flow show 6 --top
 agi-watcher in ~/work/agent-flows (started 23:57 on Apr 1 | 0h 0m running, 0h 6m waiting)
 State check-news | Substate normal | Phase waiting
@@ -201,6 +203,61 @@ Transition fields:
 - `go`: target state name
 
 Placeholders like `{{repo}}` can appear in strings. Every placeholder must be declared in `flow.args`, and those declarations become CLI arguments at `flow start` time.
+
+## Catalog and Status JSON
+
+`flow catalog` exposes the flows an agent can discover and reuse.
+
+By default it searches, in order:
+
+- `$FLOW_PATH` if set
+- `~/flows`
+- `~/.flow/flows`
+- `./flows`
+
+Directories are searched recursively for `*.yaml` and `*.yml` files. Only flows that pass validation appear in the default output.
+
+Useful forms:
+
+```bash
+flow catalog
+flow catalog --format json
+flow catalog --broken
+flow show 17 --json
+```
+
+`flow show --json` emits a compact machine-readable status snapshot, including the current phase, args, scratchpad path, latest event, and child-wait details when the agent is parked on child flows.
+
+### JSON contract
+
+The `flow show --json` shape is fixed. Machine clients should rely on these rules:
+
+- `phase` is one of `enter_state`, `resume_state`, `continue_state`, `evaluate_transition`, `evaluate_terminal`, `waiting`, `waiting_children`, `needs_help`, `interaction`, `finished`, `stopped`.
+- `end_state` is populated only when the agent finished by reaching a flow-declared end state. It is `null` when the agent is still running, paused, or was stopped.
+- `terminated_reason` is `"finished"` when the agent reached an end state, `"stopped"` when it was stopped, and `null` otherwise.
+- `waiting_on.finished[]` entries carry `status`: `"finished"` when the child reached an end state, `"stopped"` when it was stopped, `"unknown"` when the id does not resolve to any agent. `end_state` in those entries follows the same null-when-not-a-flow-end-state rule.
+
+The transition-evaluation JSON the runtime expects from an agent is also a fixed single shape:
+
+```json
+{"choice": "<name>", "reason": "<short explanation>"}
+```
+
+When `choice` is `wait-for-child`, also include `"child_ids": [17, 18]`. No other top-level keys are read. In particular, `action` is not accepted as a synonym for `choice`.
+
+## Composing Flows
+
+Flows can launch other flows without any YAML composition syntax.
+
+The intended pattern is:
+
+1. Run `flow catalog` to discover an existing flow that matches the long-running subtask.
+2. Run `flow start ...` from the agent turn and capture the child agent id.
+3. When the runtime asks for a transition or terminal action, return `wait-for-child` with one or more child ids in `child_ids`.
+4. The parent parks in `waiting_children` and wakes in the same state once every named child reaches an end state or is stopped.
+5. On wake, the parent gets a fresh turn with the child outcomes and scratchpad paths available before it chooses its next transition.
+
+The runtime does not add hierarchy-specific YAML or special child-agent semantics beyond that. Children are still ordinary agents you can inspect, pause, move, stop, or delete with the normal CLI.
 
 Example:
 

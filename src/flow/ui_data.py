@@ -303,6 +303,8 @@ def _agent_status(conn: Any, agent: dict[str, Any]) -> AgentStatus:
         return AgentStatus("needs_help", state_active_seconds(conn, int(agent["id"]), str(agent["current_state"])))
     if agent["substate"] == "interaction":
         return AgentStatus("paused", state_active_seconds(conn, int(agent["id"]), str(agent["current_state"])))
+    if normalize_phase(agent.get("phase")) == "waiting_children":
+        return AgentStatus("waiting", 0.0)
     ready_at = parse_utc(agent.get("ready_at"))
     if ready_at is not None and ready_at > utc_now():
         return AgentStatus("waiting", max(0.0, (ready_at - utc_now()).total_seconds()))

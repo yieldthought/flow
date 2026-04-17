@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .common import format_utc, parse_utc, utc_now
+from .common import format_utc, parse_utc, pending_state_payload, utc_now
 from .scratchpad import ensure_scratchpad_dir
 
 
@@ -313,7 +313,10 @@ class CodexBackend(AgentBackend):
         parts = ["codex", "--disable", "tui_app_server", "--no-alt-screen", "--cd", shlex.quote(agent["cwd"])]
         mode = self._effective_mode(agent)
         thinking = agent.get("desired_thinking") or agent.get("thinking") or "xhigh"
-        scratchpad_dir = ensure_scratchpad_dir(agent) if mode in {"full-auto", "workspace-write"} else ""
+        add_dirs: list[str] = []
+        if mode in {"full-auto", "workspace-write"}:
+            add_dirs.append(ensure_scratchpad_dir(agent))
+            add_dirs.extend(_pending_add_dirs(agent))
         if mode == "yolo":
             parts.append("--dangerously-bypass-approvals-and-sandbox")
         elif mode == "full-auto":
@@ -322,8 +325,8 @@ class CodexBackend(AgentBackend):
             parts.extend(["-a", "on-request", "-s", "workspace-write"])
         elif mode == "danger-full-access":
             parts.extend(["-a", "never", "-s", "danger-full-access"])
-        if scratchpad_dir:
-            parts.extend(["--add-dir", shlex.quote(scratchpad_dir)])
+        for add_dir in _unique_dirs(add_dirs):
+            parts.extend(["--add-dir", shlex.quote(add_dir)])
         parts.extend(["-c", shlex.quote("trust_level=trusted")])
         parts.extend(["-c", shlex.quote(f"model_reasoning_effort={thinking}")])
         parts.extend(["-c", shlex.quote("check_for_update_on_startup=false")])
@@ -642,6 +645,29 @@ def _format_agent_args(text: str) -> str:
     if not isinstance(payload, dict) or not payload:
         return ""
     return " ".join(f"{key}={value}" for key, value in sorted(payload.items()))
+
+
+def _pending_add_dirs(agent: dict[str, Any]) -> list[str]:
+    add_dirs = pending_state_payload(agent).get("add_dirs")
+    if not isinstance(add_dirs, list):
+        return []
+    items: list[str] = []
+    for item in add_dirs:
+        text = str(item or "").strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _unique_dirs(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return ordered
 
 
 def _read_rollout_events(path: Path) -> list[dict[str, Any]]:

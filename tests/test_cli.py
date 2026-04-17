@@ -1668,7 +1668,7 @@ done:
         [dict(row) for row in conn.execute("SELECT * FROM agent_events WHERE agent_id=? ORDER BY created_at, id", (agent_id,))],
     )
 
-    red_token = f"\x1b[1;38;5;{PALETTE.error}mneeds_help\x1b[0m"
+    red_token = f"\x1b[1;38;5;{PALETTE.error}mneeds-help\x1b[0m"
     assert "Substate" in text
     assert red_token in text
     assert f"{red_token} " in text

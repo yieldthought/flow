@@ -17,7 +17,7 @@ export function formatCompactDuration(seconds: number): string {
 
 export function formatStatus(status: AgentStatus): string {
   if (status === "needs_help") {
-    return "needs help";
+    return "needs-help";
   }
   return status;
 }

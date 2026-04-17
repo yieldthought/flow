@@ -8,7 +8,7 @@ from typing import Any
 from flow.backend import AgentBackend, TurnObservation
 from flow.common import format_utc, utc_now
 from flow.flowfile import flow_to_dict, load_flow, render_flow
-from flow.runtime import Runtime
+from flow.runtime import Runtime, parse_decision
 from flow.store import (
     connect,
     create_agent,
@@ -191,6 +191,11 @@ done:
     )
 
 
+def test_parse_decision_normalizes_legacy_implicit_transition_aliases() -> None:
+    assert parse_decision('{"choice":"needs_help","reason":"blocked"}').choice == "needs-help"
+    assert parse_decision('{"choice":"keep_working","reason":"one more thing"}').choice == "keep-working"
+
+
 def test_runtime_sets_thread_name_once_after_first_completed_turn(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     conn = connect()
@@ -303,7 +308,7 @@ done:
             "worked once",
             '{"choice":"done","reason":"ready for wrap-up"}',
             "wrapped once",
-            '{"choice":"keep_working","reason":"one more thing"}',
+            '{"choice":"keep-working","reason":"one more thing"}',
             "wrapped twice",
             '{"choice":"finish","reason":"finished"}',
         ],
@@ -348,7 +353,7 @@ done:
             "worked",
             '{"choice":"done","reason":"ready for wrap-up"}',
             "wrapped",
-            '{"choice":"needs_help","reason":"blocked"}',
+            '{"choice":"needs-help","reason":"blocked"}',
             "resumed wrap-up",
             '{"choice":"finish","reason":"finished"}',
         ],

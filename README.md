@@ -261,8 +261,8 @@ When an agent enters an end state:
 
 There are also implicit choices that change the status of an agent without changing its state:
 
-- `keep_working`: stays in the same state and tells Codex to continue working
-- `needs_help`: stops automation for this agent and waits for someone to assist it
+- `keep-working`: stays in the same state and tells Codex to continue working
+- `needs-help`: stops automation for this agent and waits for someone to assist it
 
 Prompted end states also have:
 
@@ -290,7 +290,7 @@ If you want to cancel a wait early:
 flow wake <agent-id>
 ```
 
-`wake` only clears the timer. It does not resume an agent that is paused in `interaction` or `needs_help`.
+`wake` only clears the timer. It does not resume an agent that is paused in `interaction` or `needs-help`.
 
 ## CLI overview
 
@@ -373,7 +373,7 @@ flow resume 12
 
 - `flow pause`: pause automation without sending `Ctrl-C`; if Codex is already working on a turn, that turn is allowed to finish naturally
 - `flow interrupt`: pause automation and also send `Ctrl-C` to the live Codex session
-- `flow resume`: leave `interaction` or `needs_help` and let automation continue
+- `flow resume`: leave `interaction` or `needs-help` and let automation continue
 
 Move or stop an agent:
 
@@ -407,7 +407,7 @@ Normal runtime state:
 Special substates:
 
 - `interaction`: you paused or interrupted the agent, and automation is paused
-- `needs_help`: the agent asked for human help and automation is paused
+- `needs-help`: the agent asked for human help and automation is paused
 
 Other useful runtime phases:
 
@@ -423,7 +423,7 @@ It can show:
 
 - daemon crash details if the runtime exited with an error
 - new runtime warnings and errors since the last time you ran `flow list`
-- agent-level `error` and `needs_help` events
+- agent-level `error` and `needs-help` events
 
 This is driven by structured runtime diagnostics, not just raw log scraping.
 
@@ -488,7 +488,7 @@ flow shutdown
 
 ## Notes
 
-- Reserved state names are `stopped`, `needs_help`, and `interaction`.
+- Reserved state names are `stopped`, `needs-help`, `needs_help`, and `interaction`.
 - End states cannot define `transitions`.
 - A state can only have one unconditional transition, and it must be last.
 - States without transitions must set `end: true` explicitly.

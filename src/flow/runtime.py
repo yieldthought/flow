@@ -22,6 +22,7 @@ from .common import (
     current_actor,
     format_utc,
     normalize_phase,
+    normalize_implicit_transition_name,
     parse_wait_seconds,
     parse_utc,
     utc_now,
@@ -944,7 +945,11 @@ def parse_decision(text: str) -> Decision:
         raise ValueError("transition evaluation JSON is missing 'choice'")
     if not isinstance(reason, str):
         raise ValueError("transition evaluation JSON has non-string 'reason'")
-    return Decision(choice=choice.strip(), reason=reason.strip(), raw_json=raw)
+    return Decision(
+        choice=normalize_implicit_transition_name(choice),
+        reason=reason.strip(),
+        raw_json=raw,
+    )
 
 
 def _thread_name_result_recorded(conn: Any, agent_id: int) -> bool:

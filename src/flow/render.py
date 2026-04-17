@@ -281,7 +281,7 @@ def _agent_display_fields(conn: Any, agent: dict[str, Any]) -> tuple[str, str, s
     if agent["ended_at"]:
         return agent_id, "finished", _format_seconds(duration_seconds(agent["created_at"], agent["ended_at"]))
     if agent["substate"] == "needs_help":
-        return agent_id, "needs help", _format_seconds(_state_seconds(conn, agent))
+        return agent_id, "needs-help", _format_seconds(_state_seconds(conn, agent))
     if agent["substate"] == "interaction":
         return agent_id, "paused", _format_seconds(_state_seconds(conn, agent))
     waiting_seconds = _waiting_seconds(agent)
@@ -293,7 +293,7 @@ def _agent_display_fields(conn: Any, agent: dict[str, Any]) -> tuple[str, str, s
 def _color_status_label(status_text: str, status_width: int) -> str:
     code = _status_color(status_text)
     padding = " " * max(0, status_width - len(status_text))
-    return color(status_text, code, bold=status_text == "needs help") + padding
+    return color(status_text, code, bold=status_text == "needs-help") + padding
 
 
 def _status_color(status_text: str) -> int:
@@ -301,7 +301,7 @@ def _status_color(status_text: str) -> int:
         return PALETTE.subtle
     if status_text == "paused":
         return PALETTE.warn
-    if status_text == "needs help":
+    if status_text == "needs-help":
         return PALETTE.error
     if status_text == "working":
         return PALETTE.info
@@ -424,7 +424,7 @@ def _render_event_body(event: dict[str, Any], *, pad_day: bool) -> str:
     if kind == "wake":
         return f"{color('woke', PALETTE.accent)}{_quoted_reason(reason)}"
     if kind == "needs_help":
-        return f"{color('needs_help', PALETTE.error, bold=True)}{_quoted_reason(reason)}"
+        return f"{color('needs-help', PALETTE.error, bold=True)}{_quoted_reason(reason)}"
     label = kind or "event"
     return f"{color(label, PALETTE.accent)}{_quoted_reason(reason)}"
 
@@ -526,7 +526,7 @@ def _quoted_reason(reason: str) -> str:
 def _format_substate(value: str) -> str:
     text = str(value or "")
     if text == "needs_help":
-        return color(text, PALETTE.error, bold=True)
+        return color("needs-help", PALETTE.error, bold=True)
     if text == "interaction":
         return color(text, PALETTE.warn, bold=True)
     return color(text, PALETTE.accent)
@@ -569,7 +569,7 @@ def _render_list_issues(conn: Any, *, daemon_active: bool) -> list[str]:
             state_label = color(str(event.get("state_name") or event.get("current_state") or ""), PALETTE.state, bold=True)
             kind = str(event["kind"] or "")
             if kind == "needs_help":
-                label = color("needs_help", PALETTE.error, bold=True)
+                label = color("needs-help", PALETTE.error, bold=True)
             else:
                 label = color("error", PALETTE.warn, bold=True)
             lines.append(f"  {when} {agent_label} {state_label} {label}: {event['reason']}")

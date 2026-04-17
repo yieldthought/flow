@@ -11,9 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-RESERVED_STATE_NAMES = {"stopped", "needs_help", "interaction"}
-IMPLICIT_TRANSITION_KEEP_WORKING = "keep_working"
-IMPLICIT_TRANSITION_NEEDS_HELP = "needs_help"
+RESERVED_STATE_NAMES = {"stopped", "needs-help", "needs_help", "interaction"}
+IMPLICIT_TRANSITION_KEEP_WORKING = "keep-working"
+IMPLICIT_TRANSITION_NEEDS_HELP = "needs-help"
 IMPLICIT_TRANSITION_FINISH = "finish"
 DEFAULT_MODE = "yolo"
 DEFAULT_THINKING = "xhigh"
@@ -64,6 +64,17 @@ def expand_path(value: str) -> str:
 def canonical_cli_name(name: str) -> str:
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", name).replace("_", "-")
     return re.sub(r"-{2,}", "-", text).strip("-").lower()
+
+
+def normalize_implicit_transition_name(name: str) -> str:
+    aliases = {
+        "keep_working": IMPLICIT_TRANSITION_KEEP_WORKING,
+        IMPLICIT_TRANSITION_KEEP_WORKING: IMPLICIT_TRANSITION_KEEP_WORKING,
+        "needs_help": IMPLICIT_TRANSITION_NEEDS_HELP,
+        IMPLICIT_TRANSITION_NEEDS_HELP: IMPLICIT_TRANSITION_NEEDS_HELP,
+        IMPLICIT_TRANSITION_FINISH: IMPLICIT_TRANSITION_FINISH,
+    }
+    return aliases.get(str(name or "").strip(), str(name or "").strip())
 
 
 def normalize_phase(value: str | None) -> str:

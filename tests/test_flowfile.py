@@ -28,7 +28,7 @@ start:
 done:
   end: true
 
-needs_help:
+needs-help:
   prompt: bad
   transitions:
     - go: done

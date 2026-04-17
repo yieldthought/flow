@@ -430,7 +430,7 @@ def _event_line(event: dict[str, Any]) -> tuple[str, dict[str, str] | None]:
         return _state_event_line(state, "woke", reason)
     if kind == "needs_help":
         state = state_name or from_state or "state"
-        return _state_event_line(state, "needs_help", reason)
+        return _state_event_line(state, "needs-help", reason)
     label = kind or "event"
     suffix = f' "{reason}"' if reason else ""
     return f"{label}{suffix}", None

@@ -26,6 +26,7 @@ from .flowfile import flow_to_dict, load_flow, parse_start_arguments, render_flo
 from .paths import ensure_home, logs_dir
 from .render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
 from .runtime import Runtime
+from .scratchpad import ensure_scratchpad_dir
 from .store import (
     connect,
     create_agent,
@@ -242,6 +243,7 @@ def cmd_start(conn: Any, path: str, state_token: str | None, extra: list[str]) -
         thinking=rendered.thinking or "xhigh",
         args_json=args_json,
     )
+    ensure_scratchpad_dir({"id": agent_id})
     update_agent(conn, agent_id, launch_marker=f"flow-agent-{agent_id}-{uuid.uuid4().hex[:8]}")
     conn.commit()
 

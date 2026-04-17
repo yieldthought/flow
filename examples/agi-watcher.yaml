@@ -1,6 +1,6 @@
 flow:
   name: agi-watcher
-  mode: read-only
+  mode: workspace-write
   args:
     site:
       help: news site to monitor

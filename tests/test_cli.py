@@ -1296,6 +1296,10 @@ done:
     )
     conn.commit()
 
+    scratchpad_path = tmp_path / ".flow" / "scratchpads" / f"agent-{agent_id}" / "scratchpad.md"
+    scratchpad_path.parent.mkdir(parents=True, exist_ok=True)
+    scratchpad_path.write_text("## Settled\n- Retry is safe\n\n## Watch\n- CI still running\n", encoding="utf-8")
+
     text = render_show(
         conn,
         dict(get_agent(conn, agent_id)),
@@ -1308,6 +1312,11 @@ done:
     assert re.search(r"\d{2}:\d{2} on Apr 1", text)
     assert "repo:" in text
     assert "run_url:" in text
+    assert "\nScratchpad\n" in text
+    assert "## Settled" in text
+    assert "- Retry is safe" in text
+    assert "## Watch" in text
+    assert "- CI still running" in text
     assert "(0h  5m):" in text
     assert "start -> hold" in text
     assert "retry later" in text
@@ -1589,6 +1598,9 @@ done:
         [dict(row) for row in conn.execute("SELECT * FROM agent_events WHERE agent_id=? ORDER BY created_at, id", (agent_id,))],
     )
 
+    assert "Scratchpad" in text
+    assert str(tmp_path / ".flow" / "scratchpads" / f"agent-{agent_id}" / "scratchpad.md") in text
+    assert "No scratchpad content yet." in text
     assert "Codex" in text
     assert "thread-123" in text
     assert f"codex --cd {tmp_path} resume thread-123" in text

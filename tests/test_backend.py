@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from flow.backend import (
@@ -38,6 +39,16 @@ def test_launch_command_disables_app_server_tui() -> None:
 
     assert "--disable tui_app_server" in command
     assert "-c trust_level=trusted" in command
+
+
+def test_workspace_write_launch_command_adds_scratchpad_dir(tmp_path: Path, monkeypatch: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    backend = CodexBackend()
+
+    command = backend._launch_command({"id": 7, "cwd": "/tmp/work", "mode": "workspace-write", "thinking": "xhigh"})
+
+    assert "-s workspace-write" in command
+    assert f"--add-dir {tmp_path / '.flow' / 'scratchpads' / 'agent-7'}" in command
 
 
 def test_codex_tui_ready_probe_accepts_standalone_banner() -> None:
@@ -216,7 +227,7 @@ def test_ensure_session_relaunches_when_tmux_pane_is_not_running_codex(monkeypat
     agent = {
         "tmux_session": "flow-123-agent-7",
         "cwd": "/tmp/work",
-        "mode": "read-only",
+        "mode": "yolo",
         "thinking": "low",
         "launch_command": "",
         "thread_id": "",

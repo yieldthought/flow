@@ -341,7 +341,7 @@ def flow_from_dict(payload: dict[str, Any]) -> FlowSpec:
         description=None if payload.get("description") is None else str(payload.get("description")),
         version=int(payload["version"]),
         path=payload.get("path"),
-        mode=payload.get("mode"),
+        mode=_normalize_stored_mode(payload.get("mode")),
         thinking=payload.get("thinking"),
         args={
             name: ArgSpec(
@@ -358,7 +358,7 @@ def flow_from_dict(payload: dict[str, Any]) -> FlowSpec:
                 end=bool(state.get("end")),
                 prompt=str(state.get("prompt") or ""),
                 wait=None if state.get("wait") is None else str(state.get("wait")),
-                mode=state.get("mode"),
+                mode=_normalize_stored_mode(state.get("mode")),
                 thinking=state.get("thinking"),
                 transitions=tuple(
                     TransitionSpec(
@@ -516,3 +516,8 @@ def _validate_wait_literal(value: str | None, context: str, errors: list[str]) -
         parse_wait_seconds(value)
     except ValueError as exc:
         errors.append(f"{context} has invalid wait '{value}': {exc}")
+
+
+def _normalize_stored_mode(value: Any) -> Any:
+    # Legacy snapshots may still contain read-only from before scratchpads existed.
+    return "workspace-write" if value == "read-only" else value

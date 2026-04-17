@@ -27,6 +27,7 @@ from .common import (
     utc_now,
 )
 from .flowfile import FlowSpec, StateSpec, TransitionSpec, flow_from_dict
+from .scratchpad import remove_scratchpad_dir, scratchpad_path_text
 from .store import (
     clear_daemon_status,
     close_open_state_run,
@@ -290,6 +291,7 @@ class Runtime:
             return
         if kind == "delete":
             self.backend.terminate(agent, immediate=True)
+            remove_scratchpad_dir(agent_id)
             conn.execute("DELETE FROM agents WHERE id=?", (agent_id,))
             return
         raise ValueError(f"unsupported command '{kind}'")
@@ -795,32 +797,49 @@ class Runtime:
 
 
 def build_state_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any]) -> str:
+    setup = _initial_setup_guidance(agent)
+    scratchpad = "" if setup else _scratchpad_file_line(agent)
+    lines = [
+        f"Flow: {flow.name}",
+        f"State: {state.name}",
+        "",
+    ]
+    if setup:
+        lines.extend([setup, ""])
+    else:
+        lines.extend([scratchpad, ""])
+    lines.extend(
+        [
+            "Work on the following state instructions:",
+            state.prompt.strip(),
+        ]
+    )
     return _control_wrapped_prompt(
         agent,
         "state_prompt",
-        "\n".join(
-            [
-                f"Flow: {flow.name}",
-                f"State: {state.name}",
-                "",
-                "Work on the following state instructions:",
-                state.prompt.strip(),
-            ]
-        ).strip(),
+        "\n".join(lines).strip(),
     )
 
 
 def build_continue_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any]) -> str:
+    setup = _initial_setup_guidance(agent)
+    scratchpad = "" if setup else _scratchpad_file_line(agent)
+    lines = [f"Continue working in state '{state.name}'."]
+    if setup:
+        lines.extend(["", setup])
+    else:
+        lines.extend(["", scratchpad])
+    lines.extend(
+        [
+            "",
+            "Use your best judgement and keep pushing the current state forward.",
+            "Do not evaluate transitions yet; keep working until the runtime asks again.",
+        ]
+    )
     return _control_wrapped_prompt(
         agent,
         "continue_prompt",
-        "\n".join(
-            [
-                f"Continue working in state '{state.name}'.",
-                "Use your best judgement and keep pushing the current state forward.",
-                "Do not evaluate transitions yet; keep working until the runtime asks again.",
-            ]
-        ),
+        "\n".join(lines),
     )
 
 
@@ -829,8 +848,14 @@ def build_transition_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, A
         f"You are evaluating outgoing transitions for flow '{flow.name}' state '{state.name}'.",
         "Choose exactly one transition name.",
         "",
-        "Explicit transitions:",
     ]
+    setup = _initial_setup_guidance(agent)
+    scratchpad = "" if setup else _scratchpad_file_line(agent)
+    if setup:
+        lines.extend([setup, ""])
+    else:
+        lines.extend([scratchpad, ""])
+    lines.append("Explicit transitions:")
     for transition in state.transitions:
         condition = transition.condition or "(unconditional)"
         wait_suffix = f" [wait {transition.wait}]" if transition.wait else ""
@@ -860,10 +885,20 @@ def build_terminal_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any
         f"You are evaluating terminal completion for flow '{flow.name}' state '{state.name}'.",
         "Choose exactly one terminal action name.",
         "",
-        "Terminal actions:",
-        f"- {IMPLICIT_TRANSITION_FINISH}: choose this if the work for this terminal state is complete and the agent should finish.",
-        f"- {IMPLICIT_TRANSITION_NEEDS_HELP}: choose this if you are blocked or need human input.",
     ]
+    setup = _initial_setup_guidance(agent)
+    scratchpad = "" if setup else _scratchpad_file_line(agent)
+    if setup:
+        lines.extend([setup, ""])
+    else:
+        lines.extend([scratchpad, ""])
+    lines.extend(
+        [
+            "Terminal actions:",
+            f"- {IMPLICIT_TRANSITION_FINISH}: choose this if the work for this terminal state is complete and the agent should finish.",
+            f"- {IMPLICIT_TRANSITION_NEEDS_HELP}: choose this if you are blocked or need human input.",
+        ]
+    )
     if allow_keep_working:
         lines.append(
             f"- {IMPLICIT_TRANSITION_KEEP_WORKING}: choose this if more work in the current terminal state is the best action."
@@ -908,6 +943,33 @@ def _control_wrapped_prompt(agent: dict[str, Any], kind: str, body: str) -> str:
             body.strip(),
         ]
     )
+
+
+def _initial_setup_guidance(agent: dict[str, Any]) -> str:
+    if agent.get("last_prompt_sent_at"):
+        return ""
+    path = scratchpad_path_text(agent)
+    return "\n".join(
+        [
+            "Flow runtime:",
+            "- You are running under the flow harness and will be moved through named states by the runtime.",
+            "- Some later prompts will ask you to choose transitions or terminal actions in a strict format; when they do, follow that format exactly.",
+            "",
+            f"Scratchpad file: {path}",
+            "Purpose: lightweight durable memory across future turns and states.",
+            "Use it only when there is genuinely reusable state worth preserving.",
+            "Avoid: logs, workbooks, and required checklists.",
+            "Optional headings:",
+            "- Context: short background needed to orient the next state",
+            "- Settled: established facts or conclusions that should not need to be rediscovered",
+            "- Watch: live or time-sensitive items that may need checking again later",
+            "- Notes: optional extra state worth carrying forward",
+        ]
+    )
+
+
+def _scratchpad_file_line(agent: dict[str, Any]) -> str:
+    return f"Scratchpad file: {scratchpad_path_text(agent)}"
 
 
 def _selected_transition(state: StateSpec, choice: str) -> TransitionSpec | None:

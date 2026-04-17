@@ -19,6 +19,18 @@ def logs_dir() -> Path:
     return flow_home() / "logs"
 
 
+def scratchpads_dir() -> Path:
+    return flow_home() / "scratchpads"
+
+
+def agent_scratchpad_dir(agent_id: int) -> Path:
+    return scratchpads_dir() / f"agent-{agent_id}"
+
+
+def agent_scratchpad_path(agent_id: int) -> Path:
+    return agent_scratchpad_dir(agent_id) / "scratchpad.md"
+
+
 def pid_path() -> Path:
     return flow_home() / "daemon.pid"
 
@@ -31,4 +43,5 @@ def ensure_home() -> Path:
     root = flow_home()
     root.mkdir(parents=True, exist_ok=True)
     logs_dir().mkdir(parents=True, exist_ok=True)
+    scratchpads_dir().mkdir(parents=True, exist_ok=True)
     return root

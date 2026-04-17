@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .common import format_utc, parse_utc, utc_now
+from .scratchpad import ensure_scratchpad_dir
 
 
 @dataclass(frozen=True)
@@ -267,45 +268,39 @@ class CodexBackend(AgentBackend):
         self._run_tmux(["send-keys", "-t", target, self._launch_command(agent), "Enter"])
 
     def _launch_command(self, agent: dict[str, Any]) -> str:
-        parts = ["codex", "--disable", "tui_app_server", "--no-alt-screen", "--cd", shlex.quote(agent["cwd"])]
-        mode = agent.get("desired_mode") or agent.get("mode") or "yolo"
-        thinking = agent.get("desired_thinking") or agent.get("thinking") or "xhigh"
-        if mode == "yolo":
-            parts.append("--dangerously-bypass-approvals-and-sandbox")
-        elif mode == "full-auto":
-            parts.append("--full-auto")
-        elif mode == "workspace-write":
-            parts.extend(["-a", "on-request", "-s", "workspace-write"])
-        elif mode == "read-only":
-            parts.extend(["-a", "on-request", "-s", "read-only"])
-        elif mode == "danger-full-access":
-            parts.extend(["-a", "never", "-s", "danger-full-access"])
-        parts.extend(["-c", shlex.quote("trust_level=trusted")])
-        parts.extend(["-c", shlex.quote(f"model_reasoning_effort={thinking}")])
-        parts.extend(["-c", shlex.quote("check_for_update_on_startup=false")])
+        parts = self._launch_parts(agent)
         thread_id = agent.get("thread_id") or ""
         if thread_id:
             parts.extend(["resume", shlex.quote(thread_id)])
         return " ".join(parts)
 
     def _launch_signature(self, agent: dict[str, Any]) -> str:
+        return " ".join(self._launch_parts(agent))
+
+    def _launch_parts(self, agent: dict[str, Any]) -> list[str]:
         parts = ["codex", "--disable", "tui_app_server", "--no-alt-screen", "--cd", shlex.quote(agent["cwd"])]
-        mode = agent.get("desired_mode") or agent.get("mode") or "yolo"
+        mode = self._effective_mode(agent)
         thinking = agent.get("desired_thinking") or agent.get("thinking") or "xhigh"
+        scratchpad_dir = ensure_scratchpad_dir(agent) if mode in {"full-auto", "workspace-write"} else ""
         if mode == "yolo":
             parts.append("--dangerously-bypass-approvals-and-sandbox")
         elif mode == "full-auto":
             parts.append("--full-auto")
         elif mode == "workspace-write":
             parts.extend(["-a", "on-request", "-s", "workspace-write"])
-        elif mode == "read-only":
-            parts.extend(["-a", "on-request", "-s", "read-only"])
         elif mode == "danger-full-access":
             parts.extend(["-a", "never", "-s", "danger-full-access"])
+        if scratchpad_dir:
+            parts.extend(["--add-dir", shlex.quote(scratchpad_dir)])
         parts.extend(["-c", shlex.quote("trust_level=trusted")])
         parts.extend(["-c", shlex.quote(f"model_reasoning_effort={thinking}")])
         parts.extend(["-c", shlex.quote("check_for_update_on_startup=false")])
-        return " ".join(parts)
+        return parts
+
+    def _effective_mode(self, agent: dict[str, Any]) -> str:
+        mode = agent.get("desired_mode") or agent.get("mode") or "yolo"
+        # Legacy snapshots may still carry read-only; scratchpads require write access.
+        return "workspace-write" if mode == "read-only" else str(mode)
 
     def _run_tmux(self, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(["tmux", *args], capture_output=True, text=True)

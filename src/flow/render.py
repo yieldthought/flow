@@ -13,6 +13,7 @@ from typing import Any
 from .ansi import PALETTE, bold, color
 from .common import duration_seconds, normalize_phase, parse_utc, utc_now
 from .flowfile import flow_from_dict
+from .scratchpad import read_scratchpad_text, scratchpad_path_text
 from .store import (
     cumulative_agent_seconds,
     daemon_exit_info,
@@ -99,6 +100,7 @@ def render_show(conn: Any, agent: dict[str, Any], events: list[dict[str, Any]]) 
     )
     if agent.get("status_message"):
         lines.append(f"{color('Status', PALETTE.muted)} {color(str(agent['status_message']), PALETTE.subtle)}")
+    lines.append(f"{color('Scratchpad', PALETTE.muted)} {color(scratchpad_path_text(agent), PALETTE.subtle)}")
     thread_id = str(agent.get("thread_id") or "").strip()
     if thread_id:
         lines.append(f"{color('Codex', PALETTE.muted)} {color(thread_id, PALETTE.subtle)}")
@@ -117,6 +119,14 @@ def render_show(conn: Any, agent: dict[str, Any], events: list[dict[str, Any]]) 
     args_payload = _parse_args_payload(agent.get("args_json", ""))
     for key, value in sorted(args_payload.items()):
         lines.append(f"{color(key + ':', PALETTE.accent, bold=True)} {value}")
+
+    lines.append("")
+    lines.append(bold(color("Scratchpad", PALETTE.bright, bold=True)))
+    scratchpad_text = read_scratchpad_text(agent)
+    if scratchpad_text.strip():
+        lines.extend(scratchpad_text.rstrip("\n").splitlines())
+    else:
+        lines.append(color("No scratchpad content yet.", PALETTE.subtle))
 
     lines.append("")
     lines.append(bold(color("Events", PALETTE.bright, bold=True)))

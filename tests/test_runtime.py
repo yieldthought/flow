@@ -137,6 +137,12 @@ done:
     assert agent["current_state"] == "done"
     assert agent["ended_at"]
     assert backend.prompts[agent_id][0].count("State: check")
+    assert f"Scratchpad file: {tmp_path / '.flow' / 'scratchpads' / f'agent-{agent_id}' / 'scratchpad.md'}" in backend.prompts[agent_id][0]
+    assert "Flow runtime:" in backend.prompts[agent_id][0]
+    assert "Optional headings:" in backend.prompts[agent_id][0]
+    assert f"Scratchpad file: {tmp_path / '.flow' / 'scratchpads' / f'agent-{agent_id}' / 'scratchpad.md'}" in backend.prompts[agent_id][1]
+    assert "Flow runtime:" not in backend.prompts[agent_id][1]
+    assert "Optional headings:" not in backend.prompts[agent_id][1]
 
 
 def test_runtime_runs_prompted_end_state_before_finishing(tmp_path: Path, monkeypatch: Any) -> None:

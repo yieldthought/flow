@@ -5,7 +5,7 @@
 ```yaml
 flow:
   name: agi-watcher
-  mode: read-only
+  mode: workspace-write
   args:
     site:
       help: news site to monitor
@@ -152,8 +152,20 @@ State is stored in:
 
 - `~/.flow/runtime.sqlite3`
 - `~/.flow/logs/daemon.log`
+- `~/.flow/scratchpads/`
 
 You can override the home directory with `FLOW_HOME`.
+
+## Scratchpads
+
+Each agent gets a lightweight scratchpad file at `~/.flow/scratchpads/agent-<id>/scratchpad.md`.
+
+- It is separate from conversation history.
+- It is meant for durable working state, not a log or checklist.
+- Agents read and edit it directly when there is something genuinely worth preserving across future states or turns.
+- The runtime grants sandboxed agents write access to their scratchpad directory with `--add-dir`.
+
+Because editable scratchpads are a core part of the harness, `read-only` is intentionally unsupported. Use `workspace-write` when you want a tighter sandbox than `yolo`.
 
 ## Flow files
 
@@ -168,7 +180,7 @@ Top-level `flow:` fields:
 - `description`: human-readable summary shown in UI headers and `flow start <file> --help` (optional)
 - `version`: of the flow file format (optional, currently always `1`)
 - `path`: initial working directory for new agents (optional, defaults to the current working directory where `flow start` is run)
-- `mode`: default Codex permissions mode (optional, defaults to `yolo`, other options are `danger-full-access`, `full-auto`, `workspace-write`, `read-only`)
+- `mode`: default Codex permissions mode (optional, defaults to `yolo`, other options are `danger-full-access`, `full-auto`, and `workspace-write`)
 - `thinking`: default flow reasoning effort (optional, default `xhigh`, other options are `high`, `medium` and `low`)
 - `args`: named CLI arguments for placeholders and their help/defaults (optional if the flow uses no placeholders)
 
@@ -329,6 +341,7 @@ flow show 12 --top
 - start time
 - total running time
 - total waiting time
+- scratchpad path
 - Codex thread id when known
 - a `codex resume ...` hint for finished agents when possible
 - args

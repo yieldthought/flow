@@ -1,0 +1,22 @@
+flow:
+  name: hello-parent
+  description: Launch hello-child and wait for it. Demonstrates wait-for-child composition.
+  thinking: low
+
+launch:
+  start: true
+  prompt: |
+    Run `flow catalog` and confirm a flow named "hello-child" is listed.
+    Start it using `flow start <path-to-hello-child.yaml>`. The command will
+    print the new agent id - remember it.
+    When the runtime asks you for a transition or terminal action, pick
+    `wait-for-child` with that id as your only `child_ids` entry.
+  transitions:
+    - go: done
+
+done:
+  thinking: low
+  prompt: |
+    The child flow has finished. Note the end state and child scratchpad path
+    you were told about, then finish by choosing `finish`.
+  end: true

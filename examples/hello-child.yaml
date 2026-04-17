@@ -1,0 +1,14 @@
+flow:
+  name: hello-child
+  description: Say hello to the scratchpad and finish cleanly. Trivial child for hello-parent.
+  thinking: low
+
+greet:
+  start: true
+  prompt: |
+    Write a single line "hello from child" to your scratchpad file, then stop.
+  transitions:
+    - go: done
+
+done:
+  end: true

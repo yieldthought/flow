@@ -42,6 +42,10 @@ class AgentBackend(ABC):
     def send_prompt(self, agent: dict[str, Any], prompt: str) -> TurnObservation:
         raise NotImplementedError
 
+    def set_thread_name(self, agent: dict[str, Any], name: str) -> bool | None:
+        del agent, name
+        return None
+
     @abstractmethod
     def interrupt(self, agent: dict[str, Any]) -> None:
         raise NotImplementedError
@@ -110,6 +114,34 @@ class CodexBackend(AgentBackend):
                     self._run_tmux(["send-keys", "-t", target, "Enter"])
                     return self._wait_for_turn_start(agent, started_after=retry_submitted_at, timeout_seconds=10.0)
                 raise
+        finally:
+            try:
+                os.unlink(buffer_path)
+            except FileNotFoundError:
+                pass
+
+    def set_thread_name(self, agent: dict[str, Any], name: str) -> bool | None:
+        session = agent["tmux_session"]
+        target = f"{session}:0.0"
+        sanitized = _sanitize_thread_name(name)
+        if not sanitized:
+            return False
+
+        self._wait_for_prompt_ready(session)
+        baseline = self._capture_pane_text(target)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            handle.write(f"/rename {sanitized}")
+            buffer_path = handle.name
+        try:
+            self._run_tmux(["load-buffer", buffer_path])
+            self._run_tmux(["paste-buffer", "-d", "-t", target])
+            self._wait_for_paste_settle(target, baseline)
+            self._run_tmux(["send-keys", "-t", target, "Enter"])
+            self._wait_for_thread_rename_confirmation(session, sanitized)
+            self._wait_for_prompt_ready(session)
+            return True
+        except RuntimeError:
+            return False
         finally:
             try:
                 os.unlink(buffer_path)
@@ -400,6 +432,17 @@ class CodexBackend(AgentBackend):
             time.sleep(0.05)
         if not saw_change:
             raise RuntimeError("pasted prompt never appeared in the Codex pane")
+
+    def _wait_for_thread_rename_confirmation(self, session: str, name: str, timeout_seconds: float = 10.0) -> None:
+        deadline = utc_now().timestamp() + timeout_seconds
+        target = f"{session}:0.0"
+        expected = f"Thread renamed to {name}"
+        while utc_now().timestamp() < deadline:
+            text = self._capture_pane_text(target)
+            if expected in text:
+                return
+            time.sleep(0.1)
+        raise RuntimeError(f"thread rename was not acknowledged in tmux session '{session}'")
 
     def _wait_for_turn_start(
         self,
@@ -746,7 +789,15 @@ def _looks_like_codex_prompt_ready(text: str, *, current_command: str = "") -> b
         content = line[2:].strip()
         if not content:
             return True
+        if content.startswith("/rename"):
+            continue
+        if content.startswith("[flow "):
+            continue
         if content.startswith("[flow-control]"):
             continue
         return True
     return False
+
+
+def _sanitize_thread_name(name: str) -> str:
+    return " ".join(str(name).replace("\x00", "").split())

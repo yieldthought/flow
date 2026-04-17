@@ -111,6 +111,28 @@ def test_codex_prompt_ready_probe_rejects_trust_prompt() -> None:
     )
 
 
+def test_codex_prompt_ready_probe_rejects_previous_thread_name_hint() -> None:
+    assert not _looks_like_codex_prompt_ready(
+        """
+› [flow 1] demo ticket=123
+
+  gpt-5.4 low fast · 5h 96% · weekly 95%
+""".strip(),
+        current_command="codex-aarch64-a",
+    )
+
+
+def test_codex_prompt_ready_probe_rejects_previous_rename_command() -> None:
+    assert not _looks_like_codex_prompt_ready(
+        """
+› /rename [flow 1] demo
+
+  gpt-5.4 low fast · 5h 96% · weekly 95%
+""".strip(),
+        current_command="codex-aarch64-a",
+    )
+
+
 def test_codex_trust_prompt_probe_detects_workspace_confirmation_screen() -> None:
     assert _looks_like_codex_trust_prompt(
         """
@@ -171,6 +193,40 @@ def test_send_prompt_waits_for_prompt_ready_before_pasting(monkeypatch: object) 
     assert calls[1][:4] == ["paste-buffer", "-d", "-t", "flow-agent-9:0.0"]
     assert calls[2] == ["send-keys", "-t", "flow-agent-9:0.0", "Enter"]
     assert observation.started_at == "2026-04-16T11:43:41.123Z"
+
+
+def test_set_thread_name_submits_inline_rename_and_waits_for_confirmation(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    calls: list[list[str]] = []
+    waited: list[str] = []
+    settled: list[tuple[str, str]] = []
+    confirmations: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session: waited.append(session))
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "baseline")
+    monkeypatch.setattr(backend, "_wait_for_paste_settle", lambda target, baseline: settled.append((target, baseline)))
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_thread_rename_confirmation",
+        lambda session, name, timeout_seconds=10.0: confirmations.append((session, name)),
+    )
+
+    def fake_run_tmux(args: list[str], check: bool = True) -> SimpleNamespace:
+        del check
+        calls.append(list(args))
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(backend, "_run_tmux", fake_run_tmux)
+
+    success = backend.set_thread_name({"tmux_session": "flow-agent-9"}, "[flow 9] demo env=prod")
+
+    assert success is True
+    assert waited == ["flow-agent-9", "flow-agent-9"]
+    assert settled == [("flow-agent-9:0.0", "baseline")]
+    assert confirmations == [("flow-agent-9", "[flow 9] demo env=prod")]
+    assert calls[0][0] == "load-buffer"
+    assert calls[1][:4] == ["paste-buffer", "-d", "-t", "flow-agent-9:0.0"]
+    assert calls[2] == ["send-keys", "-t", "flow-agent-9:0.0", "Enter"]
 
 
 def test_attach_env_unsets_tmux(monkeypatch: object) -> None:

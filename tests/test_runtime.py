@@ -28,6 +28,8 @@ class FakeBackend(AgentBackend):
         self.sessions: dict[int, bool] = {}
         self.scripts: dict[int, list[str]] = {}
         self.prompts: dict[int, list[str]] = {}
+        self.thread_name_calls: list[tuple[int, str]] = []
+        self.thread_name_result: bool | None = None
         self.turn_counter = 0
 
     def set_script(self, agent_id: int, outputs: list[str]) -> None:
@@ -42,6 +44,10 @@ class FakeBackend(AgentBackend):
         agent_id = int(agent["id"])
         self.prompts.setdefault(agent_id, []).append(prompt)
         return TurnObservation(status="running", started_at=format_utc(utc_now()))
+
+    def set_thread_name(self, agent: dict[str, Any], name: str) -> bool | None:
+        self.thread_name_calls.append((int(agent["id"]), name))
+        return self.thread_name_result
 
     def interrupt(self, agent: dict[str, Any]) -> None:
         return None
@@ -136,13 +142,89 @@ done:
     agent = dict(get_agent(conn, agent_id))
     assert agent["current_state"] == "done"
     assert agent["ended_at"]
+    assert f"[flow {agent_id}] demo" in backend.prompts[agent_id][0]
     assert backend.prompts[agent_id][0].count("State: check")
     assert f"Scratchpad file: {tmp_path / '.flow' / 'scratchpads' / f'agent-{agent_id}' / 'scratchpad.md'}" in backend.prompts[agent_id][0]
     assert "Flow runtime:" in backend.prompts[agent_id][0]
     assert "Optional headings:" in backend.prompts[agent_id][0]
+    assert f"[flow {agent_id}] demo" not in backend.prompts[agent_id][1]
     assert f"Scratchpad file: {tmp_path / '.flow' / 'scratchpads' / f'agent-{agent_id}' / 'scratchpad.md'}" in backend.prompts[agent_id][1]
     assert "Flow runtime:" not in backend.prompts[agent_id][1]
     assert "Optional headings:" not in backend.prompts[agent_id][1]
+
+
+def test_runtime_first_prompt_includes_non_default_args_in_thread_name(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: deploy
+  version: 1
+  path: .
+  args:
+    env:
+      default: staging
+    service: {}
+
+check:
+  start: true
+  prompt: verify rollout
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {"env": "prod", "service": "payments"})
+    backend = FakeBackend()
+    backend.set_script(agent_id, ["worked"])
+    runtime = Runtime(backend=backend)
+
+    runtime.tick(conn)
+
+    assert (
+        f"[flow {agent_id}] deploy env=prod service=payments" in backend.prompts[agent_id][0]
+    )
+
+
+def test_runtime_sets_thread_name_once_after_first_completed_turn(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+    backend = FakeBackend()
+    backend.thread_name_result = True
+    backend.set_script(agent_id, ["worked", '{"choice":"done","reason":"finished"}'])
+    runtime = Runtime(backend=backend)
+
+    for _ in range(4):
+        runtime.tick(conn)
+
+    assert backend.thread_name_calls == [(agent_id, f"[flow {agent_id}] demo")]
+    events = [dict(row) for row in list_agent_events(conn, agent_id)]
+    assert [event["kind"] for event in events if event["kind"].startswith("thread_name")] == ["thread_name_set"]
 
 
 def test_runtime_runs_prompted_end_state_before_finishing(tmp_path: Path, monkeypatch: Any) -> None:

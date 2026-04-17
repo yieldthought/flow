@@ -410,6 +410,7 @@ class Runtime:
                 return
             update_agent(conn, int(agent["id"]), current_turn_id=observation.turn_id, status_message="Turn completed")
             agent["current_turn_id"] = observation.turn_id
+            self._maybe_set_thread_name(conn, agent, flow)
             try:
                 self._handle_completed_turn(conn, agent, flow, state, observation.output_text or observation.raw_output)
             except Exception as exc:
@@ -773,6 +774,20 @@ class Runtime:
         if updates:
             update_agent(conn, int(agent["id"]), **updates)
 
+    def _maybe_set_thread_name(self, conn: Any, agent: dict[str, Any], flow: FlowSpec) -> None:
+        agent_id = int(agent["id"])
+        if _thread_name_result_recorded(conn, agent_id):
+            return
+        name = _suggested_thread_name(flow, agent).strip()
+        if not name:
+            return
+        result = self.backend.set_thread_name(agent, name)
+        if result is None:
+            return
+        kind = "thread_name_set" if result else "thread_name_set_failed"
+        reason = f"Set thread name to {name}" if result else f"Failed to set thread name to {name}"
+        record_agent_event(conn, agent_id, kind, state_name=agent["current_state"], reason=reason, payload={"name": name})
+
     def _enter_needs_help(self, conn: Any, agent: dict[str, Any], reason: str) -> None:
         close_open_state_run(conn, int(agent["id"]))
         if reason != str(agent.get("last_error") or ""):
@@ -815,6 +830,7 @@ def build_state_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any]) 
         ]
     )
     return _control_wrapped_prompt(
+        flow,
         agent,
         "state_prompt",
         "\n".join(lines).strip(),
@@ -837,6 +853,7 @@ def build_continue_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any
         ]
     )
     return _control_wrapped_prompt(
+        flow,
         agent,
         "continue_prompt",
         "\n".join(lines),
@@ -877,7 +894,7 @@ def build_transition_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, A
             'Respond with JSON only in the form {"choice": "<name>", "reason": "<short explanation>"}',
         ]
     )
-    return _control_wrapped_prompt(agent, "transition_eval", "\n".join(lines))
+    return _control_wrapped_prompt(flow, agent, "transition_eval", "\n".join(lines))
 
 
 def build_terminal_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any], *, allow_keep_working: bool) -> str:
@@ -909,7 +926,7 @@ def build_terminal_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any
             'Respond with JSON only in the form {"choice": "<name>", "reason": "<short explanation>"}',
         ]
     )
-    return _control_wrapped_prompt(agent, "terminal_eval", "\n".join(lines))
+    return _control_wrapped_prompt(flow, agent, "terminal_eval", "\n".join(lines))
 
 
 def parse_decision(text: str) -> Decision:
@@ -930,9 +947,26 @@ def parse_decision(text: str) -> Decision:
     return Decision(choice=choice.strip(), reason=reason.strip(), raw_json=raw)
 
 
-def _control_wrapped_prompt(agent: dict[str, Any], kind: str, body: str) -> str:
+def _thread_name_result_recorded(conn: Any, agent_id: int) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM agent_events
+        WHERE agent_id=? AND kind IN ('thread_name_set', 'thread_name_set_failed')
+        LIMIT 1
+        """,
+        (agent_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _control_wrapped_prompt(flow: FlowSpec, agent: dict[str, Any], kind: str, body: str) -> str:
     marker = agent.get("launch_marker") or f"flow-{agent['id']}-{uuid.uuid4().hex[:8]}"
-    return "\n".join(
+    lines: list[str] = []
+    thread_name_hint = _thread_name_hint(flow, agent)
+    if thread_name_hint:
+        lines.extend([thread_name_hint, ""])
+    lines.extend(
         [
             "[flow-control]",
             f"agent_id: {agent['id']}",
@@ -943,6 +977,42 @@ def _control_wrapped_prompt(agent: dict[str, Any], kind: str, body: str) -> str:
             body.strip(),
         ]
     )
+    return "\n".join(lines)
+
+
+def _thread_name_hint(flow: FlowSpec, agent: dict[str, Any]) -> str:
+    if agent.get("last_prompt_sent_at"):
+        return ""
+    return _suggested_thread_name(flow, agent)
+
+
+def _suggested_thread_name(flow: FlowSpec, agent: dict[str, Any]) -> str:
+    parts = [f"[flow {agent['id']}]", flow.name]
+    parts.extend(_non_default_arg_tokens(flow, agent))
+    return " ".join(part for part in parts if part)
+
+
+def _non_default_arg_tokens(flow: FlowSpec, agent: dict[str, Any]) -> list[str]:
+    raw_args = agent.get("args_json") or "{}"
+    try:
+        values = json.loads(raw_args)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(values, dict):
+        return []
+
+    tokens: list[str] = []
+    for name in sorted(values):
+        value = values.get(name)
+        if value is None:
+            continue
+        rendered = str(value)
+        spec = flow.args.get(name)
+        default = None if spec is None or spec.default is None else str(spec.default)
+        if default is not None and rendered == default:
+            continue
+        tokens.append(f"{name}={rendered}")
+    return tokens
 
 
 def _initial_setup_guidance(agent: dict[str, Any]) -> str:

@@ -373,7 +373,7 @@ class CodexBackend(AgentBackend):
             time.sleep(0.05)
         raise RuntimeError(f"tmux session '{session}' did not stay alive after creation")
 
-    def _wait_for_codex_ready(self, session: str, timeout_seconds: float = 30.0) -> None:
+    def _wait_for_codex_ready(self, session: str, timeout_seconds: float = 120.0) -> None:
         import time
 
         deadline = utc_now().timestamp() + timeout_seconds

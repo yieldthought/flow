@@ -30,6 +30,7 @@ class FakeBackend(AgentBackend):
         self.sessions: dict[int, bool] = {}
         self.scripts: dict[int, list[str]] = {}
         self.prompts: dict[int, list[str]] = {}
+        self.request_ids: dict[int, list[str]] = {}
         self.thread_name_calls: list[tuple[int, str]] = []
         self.thread_name_result: bool | None = None
         self.turn_counter = 0
@@ -42,9 +43,19 @@ class FakeBackend(AgentBackend):
         self.sessions[agent_id] = True
         return {"launch_command": f"fake-launch-{agent_id}"}
 
-    def send_prompt(self, agent: dict[str, Any], prompt: str) -> TurnObservation:
+    def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
         agent_id = int(agent["id"])
         self.prompts.setdefault(agent_id, []).append(prompt)
+        prompt_request_id = request_id.strip()
+        prompt_kind = ""
+        for line in prompt.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("request_id:") and not prompt_request_id:
+                prompt_request_id = stripped.split(":", 1)[1].strip()
+            if stripped.startswith("kind:"):
+                prompt_kind = stripped.split(":", 1)[1].strip()
+        if prompt_request_id and prompt_kind in {"transition_eval", "terminal_eval"}:
+            self.request_ids.setdefault(agent_id, []).append(prompt_request_id)
         return TurnObservation(status="running", started_at=format_utc(utc_now()))
 
     def set_thread_name(self, agent: dict[str, Any], name: str) -> bool | None:
@@ -73,6 +84,15 @@ class FakeBackend(AgentBackend):
             return TurnObservation(status="pending")
         self.turn_counter += 1
         text = outputs.pop(0)
+        pending_request_ids = self.request_ids.get(agent_id) or []
+        if pending_request_ids:
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict) and "choice" in payload and "request_id" not in payload:
+                payload["request_id"] = pending_request_ids.pop(0)
+                text = json.dumps(payload)
         return TurnObservation(
             status="completed",
             thread_id=f"thread-{agent_id}",
@@ -198,6 +218,25 @@ def test_parse_decision_normalizes_legacy_implicit_transition_aliases() -> None:
     assert parse_decision('{"choice":"keep_working","reason":"one more thing"}').choice == "keep-working"
 
 
+def test_parse_decision_requires_matching_request_id_when_expected() -> None:
+    decision = parse_decision(
+        '{"request_id":"req-123","choice":"keep-working","reason":"one more thing"}',
+        expected_request_id="req-123",
+    )
+
+    assert decision.request_id == "req-123"
+    assert decision.choice == "keep-working"
+
+    with pytest.raises(ValueError, match="missing 'request_id'"):
+        parse_decision('{"choice":"keep-working","reason":"one more thing"}', expected_request_id="req-123")
+
+    with pytest.raises(ValueError, match="request_id mismatch"):
+        parse_decision(
+            '{"request_id":"req-999","choice":"keep-working","reason":"one more thing"}',
+            expected_request_id="req-123",
+        )
+
+
 def test_parse_decision_accepts_wait_for_child_with_child_ids() -> None:
     decision = parse_decision(
         '{"choice":"wait-for-child","child_ids":[17,"18",17],"reason":"watch CI"}'
@@ -313,6 +352,8 @@ done:
     assert len(backend.prompts[agent_id]) == 4
     assert "State: done" in backend.prompts[agent_id][2]
     assert "kind: terminal_eval" in backend.prompts[agent_id][3]
+    assert 'Respond with JSON only in the form {"request_id": "' in backend.prompts[agent_id][1]
+    assert 'Respond with JSON only in the form {"request_id": "' in backend.prompts[agent_id][3]
 
 
 def test_runtime_handles_keep_working_then_finishes_terminal_state(tmp_path: Path, monkeypatch: Any) -> None:
@@ -789,6 +830,112 @@ done:
     assert backend.prompts[agent_id]
 
 
+def test_runtime_wake_ignores_non_waiting_agent(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    monkeypatch.setattr("flow.runtime.current_actor", lambda: "alice")
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+
+    agent_id = create_runtime_agent(conn, flow_path, {})
+    backend = FakeBackend()
+    runtime = Runtime(backend=backend)
+
+    enqueue_command(conn, agent_id, "wake", {})
+    conn.commit()
+    runtime.tick(conn)
+
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["last_error"] == ""
+    assert agent["status_message"] == "Waiting for state_prompt"
+    events = [dict(row) for row in list_agent_events(conn, agent_id)]
+    assert [event["kind"] for event in events] == ["started"]
+
+
+def test_runtime_retries_abandoned_turn_from_resume_state(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+
+    class AbandonBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.poll_count = 0
+
+        def poll_turn(self, agent: dict[str, Any]) -> TurnObservation:
+            self.poll_count += 1
+            if self.poll_count == 1:
+                return TurnObservation(
+                    status="abandoned",
+                    thread_id=f"thread-{agent['id']}",
+                    rollout_path=f"/tmp/fake-{agent['id']}.jsonl",
+                    turn_id="turn-1",
+                    started_at=agent["current_turn_started_at"],
+                )
+            return super().poll_turn(agent)
+
+    backend = AbandonBackend()
+    backend.set_script(
+        agent_id,
+        [
+            "worked after retry",
+            '{"choice":"done","reason":"finished"}',
+        ],
+    )
+    runtime = Runtime(backend=backend)
+
+    runtime.tick(conn)
+    runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["phase"] == "resume_state"
+    assert agent["current_turn_started_at"] == ""
+
+    runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["phase"] == "working"
+    assert agent["current_turn_kind"] == "resume_prompt"
+
+    events = [dict(row) for row in list_agent_events(conn, agent_id)]
+    assert [event["kind"] for event in events][-1] == "error"
+    assert "interrupted and returned to prompt" in events[-1]["reason"]
+
+
 def test_runtime_wait_for_child_parks_and_wakes_in_same_state(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     conn = connect()
@@ -1014,8 +1161,8 @@ done:
     agent_id = create_runtime_agent(conn, flow_path, {})
 
     class BrokenBackend(FakeBackend):
-        def send_prompt(self, agent: dict[str, Any], prompt: str) -> TurnObservation:
-            del agent, prompt
+        def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
+            del agent, prompt, request_id
             raise RuntimeError("prompt submission was not acknowledged")
 
     runtime = Runtime(backend=BrokenBackend())

@@ -1,0 +1,28 @@
+flow:
+  name: stress-child-worker
+  description: Minimal child flow for the stress parent.
+  mode: workspace-write
+  thinking: low
+
+child-step:
+  start: true
+  prompt: |
+    This is the child side of a flow stress test.
+
+    Write exactly one line to your scratchpad:
+    child-ok
+
+    Then stop working in this state.
+
+    When the runtime later asks for a transition choice, choose `success`.
+  transitions:
+    - if: the scratchpad line was written and the child is ready to finish
+      go: success
+    - if: anything went wrong in the child
+      go: failure
+
+success:
+  end: true
+
+failure:
+  end: true

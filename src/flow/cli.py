@@ -23,7 +23,7 @@ import yaml
 
 from . import __version__
 from .backend import CodexBackend
-from .common import format_utc, parse_wait_seconds, pending_state_payload, to_json, utc_now
+from .common import current_actor, format_utc, parse_wait_seconds, pending_state_payload, to_json, utc_now
 from .flowfile import discover_catalog, flow_to_dict, load_flow, parse_start_arguments, render_flow, validate_flow
 from .paths import ensure_home, logs_dir
 from .render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
@@ -295,7 +295,7 @@ def cmd_queue_and_wait(conn: Any, agent_id: int, kind: str, payload: dict[str, A
     if get_agent(conn, agent_id) is None:
         print(f"error: unknown agent {agent_id}", file=sys.stderr)
         return 1
-    command_id = enqueue_command(conn, agent_id, kind, payload)
+    command_id = enqueue_command(conn, agent_id, kind, payload, actor=current_actor(), source="cli")
     conn.commit()
     error = wait_for_command(conn, command_id)
     if error:

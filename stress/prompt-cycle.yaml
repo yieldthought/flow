@@ -1,0 +1,57 @@
+flow:
+  name: stress-prompt-cycle
+  description: Exercise repeated prompt/transition cycles in a single agent.
+  mode: workspace-write
+  thinking: low
+
+step-1:
+  start: true
+  prompt: |
+    This is a flow stress test.
+
+    Do not use any tools. Do not read or write files.
+    Reply with exactly:
+    STEP_1_OK
+
+    When the runtime later asks for a transition choice, choose `step-2`.
+  transitions:
+    - if: the first exact response was completed and it is time to continue
+      go: step-2
+    - if: anything about the first step went wrong
+      go: failure
+
+step-2:
+  prompt: |
+    This is still the same flow stress test.
+
+    Do not use any tools. Do not read or write files.
+    Reply with exactly:
+    STEP_2_OK
+
+    When the runtime later asks for a transition choice, choose `step-3`.
+  transitions:
+    - if: the second exact response was completed and it is time to continue
+      go: step-3
+    - if: anything about the second step went wrong
+      go: failure
+
+step-3:
+  prompt: |
+    Final prompt-cycle step.
+
+    Do not use any tools. Do not read or write files.
+    Reply with exactly:
+    STEP_3_OK
+
+    When the runtime later asks for a transition choice, choose `success`.
+  transitions:
+    - if: the third exact response was completed and it is time to finish
+      go: success
+    - if: anything about the third step went wrong
+      go: failure
+
+success:
+  end: true
+
+failure:
+  end: true

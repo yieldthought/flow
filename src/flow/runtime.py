@@ -63,6 +63,7 @@ class Decision:
     choice: str
     reason: str
     raw_json: str
+    request_id: str = ""
     child_ids: tuple[int, ...] = ()
 
 
@@ -146,6 +147,7 @@ class Runtime:
                 "current_turn_id": "",
                 "current_turn_kind": "",
                 "current_turn_started_at": "",
+                "current_request_id": "",
                 "last_error": "",
             }
             if agent["substate"] == "normal":
@@ -174,9 +176,11 @@ class Runtime:
                 continue
             agent = dict(agent_row)
             payload = json.loads(row["payload_json"] or "{}")
+            actor = str(row["actor"] or "").strip() or current_actor()
+            source = str(row["source"] or "").strip()
             error = ""
             try:
-                self._apply_command(conn, agent, row["kind"], payload)
+                self._apply_command(conn, agent, row["kind"], payload, actor=actor, source=source)
             except Exception as exc:  # pragma: no cover - exercised by manual runs
                 error = str(exc)
                 details = traceback.format_exc().rstrip()
@@ -187,7 +191,7 @@ class Runtime:
                         "error",
                         state_name=agent["current_state"],
                         reason=error,
-                        payload={"command": row["kind"]},
+                        payload={"command": row["kind"], "actor": actor, "source": source},
                     )
                     record_daemon_event(
                         conn,
@@ -198,9 +202,18 @@ class Runtime:
                 update_agent(conn, int(agent["id"]), last_error=error, status_message=error)
             mark_command_processed(conn, int(row["id"]), error)
 
-    def _apply_command(self, conn: Any, agent: dict[str, Any], kind: str, payload: dict[str, Any]) -> None:
+    def _apply_command(
+        self,
+        conn: Any,
+        agent: dict[str, Any],
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        actor: str,
+        source: str,
+    ) -> None:
         agent_id = int(agent["id"])
-        actor = current_actor()
+        command_payload = {"actor": actor, "source": source} if source else {"actor": actor}
         if kind == "pause":
             close_open_state_run(conn, agent_id)
             reason = f"Paused by {actor}"
@@ -210,6 +223,7 @@ class Runtime:
                 "pause",
                 state_name=agent["current_state"],
                 reason=reason,
+                payload=command_payload,
             )
             update_agent(
                 conn,
@@ -220,6 +234,8 @@ class Runtime:
             )
             return
         if kind == "interrupt":
+            if agent["phase"] == "finished":
+                return
             self.backend.interrupt(agent)
             close_open_state_run(conn, agent_id)
             record_agent_event(
@@ -228,12 +244,31 @@ class Runtime:
                 "interrupt",
                 state_name=agent["current_state"],
                 reason=f"Interrupted by {actor}",
+                payload=command_payload,
             )
-            update_agent(conn, agent_id, substate="interaction", phase="paused", current_turn_id="", current_turn_kind="", current_turn_started_at="")
+            update_agent(
+                conn,
+                agent_id,
+                substate="interaction",
+                phase="paused",
+                current_turn_id="",
+                current_turn_kind="",
+                current_turn_started_at="",
+                current_request_id="",
+            )
             return
         if kind == "resume":
-            fields = {"substate": "normal", "shutdown_mode": ""}
             child_wait = _child_wait_state(conn, agent)
+            remaining = _waiting_remaining_seconds(agent)
+            should_resume = (
+                agent.get("substate") != "normal"
+                or child_wait is not None
+                or bool(agent.get("ready_at"))
+                or remaining > 0
+            )
+            if not should_resume:
+                return
+            fields = {"substate": "normal", "shutdown_mode": ""}
             if child_wait is not None:
                 pending = [item["id"] for item in child_wait["pending"]]
                 if pending:
@@ -243,7 +278,6 @@ class Runtime:
                     self._queue_children_wake(conn, agent, child_wait)
                     fields = {}
             else:
-                remaining = _waiting_remaining_seconds(agent)
                 if remaining > 0:
                     fields["phase"] = "waiting"
                 else:
@@ -257,15 +291,23 @@ class Runtime:
                 "resume",
                 state_name=agent["current_state"],
                 reason=f"Resumed by {actor}",
+                payload=command_payload,
             )
             if fields:
                 update_agent(conn, agent_id, **fields)
             return
         if kind == "wake":
             if not agent.get("ready_at"):
-                raise ValueError(f"agent {agent_id} is not currently waiting")
+                return
             reason = f"Woken by {actor}"
-            record_agent_event(conn, agent_id, "wake", state_name=agent["current_state"], reason=reason)
+            record_agent_event(
+                conn,
+                agent_id,
+                "wake",
+                state_name=agent["current_state"],
+                reason=reason,
+                payload=command_payload,
+            )
             fields = {"ready_at": "", "status_message": reason}
             if agent["substate"] == "normal":
                 fields["phase"] = "resume_state"
@@ -279,7 +321,15 @@ class Runtime:
             if target not in flow.states:
                 raise ValueError(f"unknown state '{target}'")
             self.backend.interrupt(agent)
-            update_agent(conn, agent_id, substate="normal", current_turn_id="", current_turn_kind="", current_turn_started_at="")
+            update_agent(
+                conn,
+                agent_id,
+                substate="normal",
+                current_turn_id="",
+                current_turn_kind="",
+                current_turn_started_at="",
+                current_request_id="",
+            )
             reason = f"Moved to {target} by {actor}"
             record_agent_event(
                 conn,
@@ -289,6 +339,7 @@ class Runtime:
                 to_state=target,
                 choice="move",
                 reason=reason,
+                payload=command_payload,
             )
             self._move_to_state(conn, agent, flow, target, reason)
             return
@@ -307,6 +358,7 @@ class Runtime:
                 to_state=target,
                 choice="stop",
                 reason=f"Stopped by {actor}",
+                payload=command_payload,
             )
             self._transition_terminal(conn, agent, target, choice="stop", reason=f"Stopped by {actor}")
             return
@@ -332,6 +384,7 @@ class Runtime:
                     current_turn_id="",
                     current_turn_kind="",
                     current_turn_started_at="",
+                    current_request_id="",
                     phase="suspended",
                     shutdown_mode="",
                 )
@@ -430,6 +483,28 @@ class Runtime:
         if agent["current_turn_started_at"]:
             observation = self.backend.poll_turn(agent)
             self._apply_turn_observation_metadata(conn, agent, observation)
+            if observation.status == "abandoned":
+                reason = f"{agent['current_turn_kind'] or 'turn'} was interrupted and returned to prompt without completion"
+                record_agent_event(
+                    conn,
+                    int(agent["id"]),
+                    "error",
+                    state_name=state.name,
+                    reason=reason,
+                    payload={"turn_kind": agent.get("current_turn_kind") or "", "auto_retry": True},
+                )
+                update_agent(
+                    conn,
+                    int(agent["id"]),
+                    current_turn_id="",
+                    current_turn_kind="",
+                    current_turn_started_at="",
+                    current_request_id="",
+                    phase="resume_state",
+                    last_error=reason,
+                    status_message="Retrying after interrupted turn",
+                )
+                return
             if observation.status != "completed":
                 return
             update_agent(conn, int(agent["id"]), current_turn_id=observation.turn_id, status_message="Turn completed")
@@ -458,34 +533,48 @@ class Runtime:
         if phase in {"enter_state", "resume_state"}:
             wake_prompt = _children_wake_prompt(flow, state, agent)
             if wake_prompt:
-                self._send_turn(conn, agent, wake_prompt, "children_wake")
+                request_id = _new_request_id()
+                wake_prompt = _children_wake_prompt(flow, state, agent, request_id=request_id)
+                self._send_turn(conn, agent, wake_prompt, "children_wake", request_id=request_id)
                 return
             if state.prompt:
-                prompt = build_state_prompt(flow, state, agent)
-                self._send_turn(conn, agent, prompt, "state_prompt" if phase == "enter_state" else "resume_prompt")
+                request_id = _new_request_id()
+                prompt = build_state_prompt(flow, state, agent, request_id=request_id)
+                self._send_turn(
+                    conn,
+                    agent,
+                    prompt,
+                    "state_prompt" if phase == "enter_state" else "resume_prompt",
+                    request_id=request_id,
+                )
             else:
-                prompt = build_transition_prompt(flow, state, agent, allow_keep_working=False)
-                self._send_turn(conn, agent, prompt, "transition_eval")
+                request_id = _new_request_id()
+                prompt = build_transition_prompt(flow, state, agent, allow_keep_working=False, request_id=request_id)
+                self._send_turn(conn, agent, prompt, "transition_eval", request_id=request_id)
             return
         if phase == "continue_state":
-            prompt = build_continue_prompt(flow, state, agent)
-            self._send_turn(conn, agent, prompt, "continue_prompt")
+            request_id = _new_request_id()
+            prompt = build_continue_prompt(flow, state, agent, request_id=request_id)
+            self._send_turn(conn, agent, prompt, "continue_prompt", request_id=request_id)
             return
         if phase == "evaluate_terminal":
-            prompt = build_terminal_prompt(flow, state, agent, allow_keep_working=bool(state.prompt))
-            self._send_turn(conn, agent, prompt, "terminal_eval")
+            request_id = _new_request_id()
+            prompt = build_terminal_prompt(flow, state, agent, allow_keep_working=bool(state.prompt), request_id=request_id)
+            self._send_turn(conn, agent, prompt, "terminal_eval", request_id=request_id)
             return
         if phase == "evaluate_transition":
-            prompt = build_transition_prompt(flow, state, agent, allow_keep_working=bool(state.prompt))
-            self._send_turn(conn, agent, prompt, "transition_eval")
+            request_id = _new_request_id()
+            prompt = build_transition_prompt(flow, state, agent, allow_keep_working=bool(state.prompt), request_id=request_id)
+            self._send_turn(conn, agent, prompt, "transition_eval", request_id=request_id)
 
-    def _send_turn(self, conn: Any, agent: dict[str, Any], prompt: str, kind: str) -> None:
-        observation = self.backend.send_prompt(agent, prompt)
+    def _send_turn(self, conn: Any, agent: dict[str, Any], prompt: str, kind: str, *, request_id: str) -> None:
+        observation = self.backend.send_prompt(agent, prompt, request_id=request_id)
         now = observation.started_at or format_utc(utc_now())
         fields: dict[str, str] = {
             "current_turn_kind": kind,
             "current_turn_started_at": now,
             "current_turn_id": observation.turn_id or "",
+            "current_request_id": request_id,
             "last_prompt_sent_at": now,
             "phase": "working",
             "status_message": f"Waiting for {kind}",
@@ -505,15 +594,17 @@ class Runtime:
         output_text: str,
     ) -> None:
         kind = agent["current_turn_kind"]
+        request_id = str(agent.get("current_request_id") or "")
         update_agent(
             conn,
             int(agent["id"]),
             current_turn_id="",
             current_turn_kind="",
             current_turn_started_at="",
+            current_request_id="",
         )
         if kind == "terminal_eval":
-            decision = parse_decision(output_text)
+            decision = parse_decision(output_text, expected_request_id=request_id)
             if decision.choice == IMPLICIT_TRANSITION_NEEDS_HELP:
                 close_open_state_run(conn, int(agent["id"]))
                 record_agent_event(
@@ -584,7 +675,7 @@ class Runtime:
             )
             return
         if kind == "transition_eval":
-            decision = parse_decision(output_text)
+            decision = parse_decision(output_text, expected_request_id=request_id)
             if decision.choice == IMPLICIT_TRANSITION_NEEDS_HELP:
                 close_open_state_run(conn, int(agent["id"]))
                 record_agent_event(
@@ -716,6 +807,7 @@ class Runtime:
                 current_turn_id="",
                 current_turn_kind="",
                 current_turn_started_at="",
+                current_request_id="",
                 status_message=reason,
             )
             self.backend.terminate(agent, immediate=False)
@@ -737,6 +829,7 @@ class Runtime:
             current_turn_id="",
             current_turn_kind="",
             current_turn_started_at="",
+            current_request_id="",
         )
         if ready_at:
             record_agent_event(
@@ -763,6 +856,7 @@ class Runtime:
             current_turn_id="",
             current_turn_kind="",
             current_turn_started_at="",
+            current_request_id="",
             ready_at="",
             status_message=reason,
         )
@@ -874,6 +968,7 @@ class Runtime:
             current_turn_id="",
             current_turn_kind="",
             current_turn_started_at="",
+            current_request_id="",
             phase="paused",
             status_message=status_message,
         )
@@ -921,12 +1016,13 @@ class Runtime:
             current_turn_id="",
             current_turn_kind="",
             current_turn_started_at="",
+            current_request_id="",
             last_error=reason,
             status_message="Needs help",
         )
 
 
-def build_state_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any]) -> str:
+def build_state_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any], *, request_id: str) -> str:
     setup = _initial_setup_guidance(agent)
     scratchpad = "" if setup else _scratchpad_file_line(agent)
     lines = [
@@ -949,10 +1045,11 @@ def build_state_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any]) 
         agent,
         "state_prompt",
         "\n".join(lines).strip(),
+        request_id=request_id,
     )
 
 
-def build_continue_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any]) -> str:
+def build_continue_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any], *, request_id: str) -> str:
     setup = _initial_setup_guidance(agent)
     scratchpad = "" if setup else _scratchpad_file_line(agent)
     lines = [f"Continue working in state '{state.name}'."]
@@ -972,10 +1069,18 @@ def build_continue_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any
         agent,
         "continue_prompt",
         "\n".join(lines),
+        request_id=request_id,
     )
 
 
-def build_transition_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any], *, allow_keep_working: bool) -> str:
+def build_transition_prompt(
+    flow: FlowSpec,
+    state: StateSpec,
+    agent: dict[str, Any],
+    *,
+    allow_keep_working: bool,
+    request_id: str,
+) -> str:
     lines = [
         f"You are evaluating outgoing transitions for flow '{flow.name}' state '{state.name}'.",
         "Choose exactly one transition name.",
@@ -1010,16 +1115,26 @@ def build_transition_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, A
     lines.extend(
         [
             "",
-            'Respond with JSON only in the form {"choice": "<name>", "reason": "<short explanation>"}.',
+            (
+                'Respond with JSON only in the form '
+                f'{{"request_id": "{request_id}", "choice": "<name>", "reason": "<short explanation>"}}.'
+            ),
             (
                 f'When choosing {IMPLICIT_TRANSITION_WAIT_FOR_CHILD}, also include "child_ids": [17, 18].'
             ),
         ]
     )
-    return _control_wrapped_prompt(flow, agent, "transition_eval", "\n".join(lines))
+    return _control_wrapped_prompt(flow, agent, "transition_eval", "\n".join(lines), request_id=request_id)
 
 
-def build_terminal_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any], *, allow_keep_working: bool) -> str:
+def build_terminal_prompt(
+    flow: FlowSpec,
+    state: StateSpec,
+    agent: dict[str, Any],
+    *,
+    allow_keep_working: bool,
+    request_id: str,
+) -> str:
     lines = [
         f"You are evaluating terminal completion for flow '{flow.name}' state '{state.name}'.",
         "Choose exactly one terminal action name.",
@@ -1049,16 +1164,19 @@ def build_terminal_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any
     lines.extend(
         [
             "",
-            'Respond with JSON only in the form {"choice": "<name>", "reason": "<short explanation>"}.',
+            (
+                'Respond with JSON only in the form '
+                f'{{"request_id": "{request_id}", "choice": "<name>", "reason": "<short explanation>"}}.'
+            ),
             (
                 f'When choosing {IMPLICIT_TRANSITION_WAIT_FOR_CHILD}, also include "child_ids": [17, 18].'
             ),
         ]
     )
-    return _control_wrapped_prompt(flow, agent, "terminal_eval", "\n".join(lines))
+    return _control_wrapped_prompt(flow, agent, "terminal_eval", "\n".join(lines), request_id=request_id)
 
 
-def _children_wake_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any]) -> str:
+def _children_wake_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any], *, request_id: str = "") -> str:
     payload = pending_state_payload(agent)
     if payload.get("kind") != "children_wake":
         return ""
@@ -1097,10 +1215,10 @@ def _children_wake_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any
             "Do not choose a transition yet; the runtime will ask right after this turn.",
         ]
     )
-    return _control_wrapped_prompt(flow, agent, "children_wake", "\n".join(lines))
+    return _control_wrapped_prompt(flow, agent, "children_wake", "\n".join(lines), request_id=request_id)
 
 
-def parse_decision(text: str) -> Decision:
+def parse_decision(text: str, *, expected_request_id: str = "") -> Decision:
     raw = text.strip()
     if raw.startswith("```"):
         parts = raw.splitlines()
@@ -1116,6 +1234,14 @@ def parse_decision(text: str) -> Decision:
     choice = payload.get("choice")
     if not isinstance(choice, str) or not choice.strip():
         raise ValueError("transition evaluation JSON is missing 'choice'")
+    request_id = payload.get("request_id") or ""
+    if expected_request_id:
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise ValueError("transition evaluation JSON is missing 'request_id'")
+        if request_id.strip() != expected_request_id:
+            raise ValueError(
+                f"transition evaluation JSON request_id mismatch: expected '{expected_request_id}', got '{request_id.strip()}'"
+            )
     normalized = normalize_implicit_transition_name(choice)
     child_ids: tuple[int, ...] = ()
     if normalized == IMPLICIT_TRANSITION_WAIT_FOR_CHILD:
@@ -1124,6 +1250,7 @@ def parse_decision(text: str) -> Decision:
         choice=normalized,
         reason=reason.strip(),
         raw_json=raw,
+        request_id=request_id.strip() if isinstance(request_id, str) else "",
         child_ids=child_ids,
     )
 
@@ -1166,7 +1293,11 @@ def _thread_name_result_recorded(conn: Any, agent_id: int) -> bool:
     return row is not None
 
 
-def _control_wrapped_prompt(flow: FlowSpec, agent: dict[str, Any], kind: str, body: str) -> str:
+def _new_request_id() -> str:
+    return f"req-{uuid.uuid4().hex[:12]}"
+
+
+def _control_wrapped_prompt(flow: FlowSpec, agent: dict[str, Any], kind: str, body: str, *, request_id: str = "") -> str:
     marker = agent.get("launch_marker") or f"flow-{agent['id']}-{uuid.uuid4().hex[:8]}"
     lines: list[str] = []
     thread_name_hint = _thread_name_hint(flow, agent)
@@ -1178,6 +1309,7 @@ def _control_wrapped_prompt(flow: FlowSpec, agent: dict[str, Any], kind: str, bo
             f"agent_id: {agent['id']}",
             f"marker: {marker}",
             f"kind: {kind}",
+            *( [f"request_id: {request_id}"] if request_id else [] ),
             "[/flow-control]",
             "",
             body.strip(),

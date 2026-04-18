@@ -115,6 +115,24 @@ def test_codex_prompt_ready_probe_accepts_idle_conversation_view() -> None:
     )
 
 
+def test_codex_prompt_ready_probe_accepts_node_hosted_codex() -> None:
+    assert _looks_like_codex_prompt_ready(
+        """
+╭─────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.114.0)                  │
+│                                             │
+│ model:     gpt-5.4 xhigh   /model to change │
+│ directory: /localdev/moconnor/mport         │
+╰─────────────────────────────────────────────╯
+
+› Find and fix a bug in @filename
+
+  gpt-5.4 xhigh · 100% left · /localdev/moconnor/mport
+""".strip(),
+        current_command="node",
+    )
+
+
 def test_codex_prompt_ready_probe_rejects_trust_prompt() -> None:
     assert not _looks_like_codex_prompt_ready(
         """
@@ -207,7 +225,7 @@ def test_send_prompt_waits_for_prompt_ready_before_pasting(monkeypatch: object) 
 
     assert waited == ["flow-agent-9"]
     assert settled == [("flow-agent-9:0.0", "baseline")]
-    assert turn_waits == ["flow-agent-9:10.0"]
+    assert turn_waits == ["flow-agent-9:30.0"]
     assert calls[0][0] == "load-buffer"
     assert calls[1][:4] == ["paste-buffer", "-d", "-t", "flow-agent-9:0.0"]
     assert calls[2] == ["send-keys", "-t", "flow-agent-9:0.0", "Enter"]
@@ -294,6 +312,8 @@ def test_viewer_pane_title_includes_args_and_path() -> None:
 def test_is_codex_process_name_accepts_codex_variants() -> None:
     assert _is_codex_process_name("codex")
     assert _is_codex_process_name("codex-aarch64-a")
+    assert _is_codex_process_name("node")
+    assert _is_codex_process_name("nodejs")
     assert not _is_codex_process_name("bash")
 
 

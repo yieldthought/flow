@@ -99,21 +99,31 @@ class CodexBackend(AgentBackend):
             handle.write(prompt)
             buffer_path = handle.name
         try:
-            self._run_tmux(["load-buffer", buffer_path])
-            self._run_tmux(["paste-buffer", "-d", "-t", target])
-            self._wait_for_paste_settle(target, baseline)
+            self._paste_prompt(target, buffer_path, baseline)
             submitted_at = utc_now()
-            self._run_tmux(["send-keys", "-t", target, "Enter"])
+            self._submit_prompt(target)
             try:
-                return self._wait_for_turn_start(agent, started_after=submitted_at, timeout_seconds=10.0)
+                return self._wait_for_turn_start(agent, started_after=submitted_at, timeout_seconds=30.0)
             except RuntimeError:
                 current_command = self._pane_current_command(target)
                 text = self._capture_pane_text(target)
                 if _looks_like_codex_prompt_ready(text, current_command=current_command):
+                    retry_baseline = text
+                    self._paste_prompt(target, buffer_path, retry_baseline)
                     retry_submitted_at = utc_now()
                     self._run_tmux(["send-keys", "-t", target, "Enter"])
-                    return self._wait_for_turn_start(agent, started_after=retry_submitted_at, timeout_seconds=10.0)
-                raise
+                    try:
+                        return self._wait_for_turn_start(agent, started_after=retry_submitted_at, timeout_seconds=30.0)
+                    except RuntimeError:
+                        pass
+                self._launch_codex(agent)
+                self._wait_for_codex_ready(agent["tmux_session"])
+                self._wait_for_prompt_ready(agent["tmux_session"], timeout_seconds=30.0)
+                relaunch_baseline = self._capture_pane_text(target)
+                self._paste_prompt(target, buffer_path, relaunch_baseline)
+                relaunch_submitted_at = utc_now()
+                self._submit_prompt(target)
+                return self._wait_for_turn_start(agent, started_after=relaunch_submitted_at, timeout_seconds=30.0)
         finally:
             try:
                 os.unlink(buffer_path)
@@ -272,6 +282,23 @@ class CodexBackend(AgentBackend):
         if turn is None:
             return TurnObservation(status="pending", thread_id=resolved_thread_id, rollout_path=resolved_path)
         if not turn["ended_at"]:
+            target = f"{agent['tmux_session']}:0.0"
+            text = self._capture_pane_text(target)
+            current_command = self._pane_current_command(target)
+            if _looks_like_codex_prompt_ready(text, current_command=current_command) and (
+                turn["output_text"] or turn["raw_output"]
+            ) and not _looks_like_codex_task_in_progress(text):
+                return TurnObservation(
+                    status="completed",
+                    thread_id=resolved_thread_id,
+                    rollout_path=resolved_path,
+                    turn_id=turn["turn_id"],
+                    started_at=turn["started_at"],
+                    ended_at=turn["last_event_at"],
+                    output_text=turn["output_text"],
+                    raw_output=turn["raw_output"],
+                    last_event_at=turn["last_event_at"],
+                )
             return TurnObservation(
                 status="running",
                 thread_id=resolved_thread_id,
@@ -435,6 +462,19 @@ class CodexBackend(AgentBackend):
             time.sleep(0.05)
         if not saw_change:
             raise RuntimeError("pasted prompt never appeared in the Codex pane")
+
+    def _paste_prompt(self, target: str, buffer_path: str, baseline: str) -> None:
+        self._run_tmux(["load-buffer", buffer_path])
+        self._run_tmux(["paste-buffer", "-d", "-t", target])
+        self._wait_for_paste_settle(target, baseline)
+
+    def _submit_prompt(self, target: str) -> None:
+        self._run_tmux(["send-keys", "-t", target, "Enter"])
+        time.sleep(0.2)
+        text = self._capture_pane_text(target)
+        current_command = self._pane_current_command(target)
+        if _looks_like_codex_prompt_ready(text, current_command=current_command):
+            self._run_tmux(["send-keys", "-t", target, "Enter"])
 
     def _wait_for_thread_rename_confirmation(self, session: str, name: str, timeout_seconds: float = 10.0) -> None:
         deadline = utc_now().timestamp() + timeout_seconds
@@ -634,7 +674,7 @@ def _attach_env() -> dict[str, str]:
 
 def _is_codex_process_name(value: str) -> bool:
     text = value.strip().lower()
-    return text.startswith("codex")
+    return text.startswith("codex") or text in {"node", "nodejs"}
 
 
 def _format_agent_args(text: str) -> str:
@@ -785,7 +825,7 @@ def _looks_like_codex_tui_ready(text: str, *, current_command: str = "") -> bool
     # After startup or restore, Codex may already be in an active conversation
     # view where the initial banner has scrolled away. In that case the tmux
     # pane still belongs to the codex process and contains our conversation UI.
-    if command.startswith("codex"):
+    if _is_codex_process_name(command):
         if "[flow-control]" in text:
             return True
         if any(marker in text for marker in ("› ", "• ", "Run /", "gpt-5.4", "gpt-5", "model:", "directory:")):
@@ -823,6 +863,19 @@ def _looks_like_codex_prompt_ready(text: str, *, current_command: str = "") -> b
             continue
         return True
     return False
+
+
+def _looks_like_codex_task_in_progress(text: str) -> bool:
+    tail = "\n".join(line.strip() for line in text.splitlines()[-24:] if line.strip())
+    markers = (
+        "Working (",
+        "Running (",
+        "esc to interrupt",
+        "background terminal running",
+        "background terminal",
+        "Ctrl+L is disabled while a task is in progress",
+    )
+    return any(marker in tail for marker in markers)
 
 
 def _sanitize_thread_name(name: str) -> str:

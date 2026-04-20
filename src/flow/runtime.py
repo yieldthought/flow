@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sqlite3
 import sys
 import time
 import traceback
@@ -38,6 +39,7 @@ from .store import (
     connect,
     get_agent,
     get_flow_snapshot,
+    is_locked_error,
     get_meta,
     init_db,
     list_agents,
@@ -90,27 +92,44 @@ class Runtime:
 
         try:
             while self._running:
-                self.tick(conn)
+                try:
+                    self.tick(conn)
+                except sqlite3.OperationalError as exc:
+                    if not is_locked_error(exc):
+                        raise
+                    conn.rollback()
+                    time.sleep(POLL_INTERVAL_SECONDS)
+                    continue
                 time.sleep(POLL_INTERVAL_SECONDS)
         except Exception as exc:  # pragma: no cover - defensive daemon guard
             exit_code = 1
             exited_at = format_utc(utc_now())
             details = traceback.format_exc().rstrip()
-            record_daemon_event(
-                conn,
-                level="error",
-                message=str(exc),
-                created_at=exited_at,
-                details_text=details,
-            )
-            record_daemon_exit(conn, kind="error", exited_at=exited_at, error_text=details)
-            conn.commit()
+            try:
+                record_daemon_event(
+                    conn,
+                    level="error",
+                    message=str(exc),
+                    created_at=exited_at,
+                    details_text=details,
+                )
+                record_daemon_exit(conn, kind="error", exited_at=exited_at, error_text=details)
+                conn.commit()
+            except sqlite3.OperationalError as log_exc:
+                if not is_locked_error(log_exc):
+                    raise
+                conn.rollback()
             print(details, file=sys.stderr)
         finally:
-            if exit_code == 0:
-                record_daemon_exit(conn, kind="clean", exited_at=exited_at or format_utc(utc_now()))
-            clear_daemon_status(conn)
-            conn.commit()
+            try:
+                if exit_code == 0:
+                    record_daemon_exit(conn, kind="clean", exited_at=exited_at or format_utc(utc_now()))
+                clear_daemon_status(conn)
+                conn.commit()
+            except sqlite3.OperationalError as exit_exc:
+                if not is_locked_error(exit_exc):
+                    raise
+                conn.rollback()
             conn.close()
         return exit_code
 
@@ -483,26 +502,28 @@ class Runtime:
         if agent["current_turn_started_at"]:
             observation = self.backend.poll_turn(agent)
             self._apply_turn_observation_metadata(conn, agent, observation)
-            if observation.status == "abandoned":
-                reason = f"{agent['current_turn_kind'] or 'turn'} was interrupted and returned to prompt without completion"
+            if observation.status == "aborted":
+                reason = observation.abort_reason or f"{agent['current_turn_kind'] or 'turn'} was aborted in Codex"
+                close_open_state_run(conn, int(agent["id"]))
                 record_agent_event(
                     conn,
                     int(agent["id"]),
                     "error",
                     state_name=state.name,
                     reason=reason,
-                    payload={"turn_kind": agent.get("current_turn_kind") or "", "auto_retry": True},
+                    payload={"turn_kind": agent.get("current_turn_kind") or "", "auto_retry": False},
                 )
                 update_agent(
                     conn,
                     int(agent["id"]),
+                    substate="interaction",
                     current_turn_id="",
                     current_turn_kind="",
                     current_turn_started_at="",
                     current_request_id="",
-                    phase="resume_state",
+                    phase="paused",
                     last_error=reason,
-                    status_message="Retrying after interrupted turn",
+                    status_message="Paused after interrupted turn",
                 )
                 return
             if observation.status != "completed":
@@ -959,6 +980,19 @@ class Runtime:
             return
         observation = self.backend.poll_turn(agent)
         self._apply_turn_observation_metadata(conn, agent, observation)
+        if observation.status == "aborted":
+            status_message = "Needs help" if agent["substate"] == "needs_help" else "Paused in interaction"
+            update_agent(
+                conn,
+                int(agent["id"]),
+                current_turn_id="",
+                current_turn_kind="",
+                current_turn_started_at="",
+                current_request_id="",
+                phase="paused",
+                status_message=status_message,
+            )
+            return
         if observation.status != "completed":
             return
         status_message = "Needs help" if agent["substate"] == "needs_help" else "Paused in interaction"

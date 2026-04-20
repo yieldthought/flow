@@ -37,17 +37,22 @@ REQUIRED_TABLES = {
     "agent_events",
     "daemon_events",
 }
+SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
     ensure_home()
     target = path or db_path()
-    conn = sqlite3.connect(target, isolation_level=None)
+    conn = sqlite3.connect(target, isolation_level=None, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
     return conn
+
+
+def is_locked_error(exc: sqlite3.Error | Exception) -> bool:
+    return "database is locked" in str(exc).lower()
 
 
 def init_db(conn: sqlite3.Connection) -> None:

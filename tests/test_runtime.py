@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from flow.runtime import Runtime, parse_decision
 from flow.store import (
     connect,
     create_agent,
+    daemon_exit_info,
     enqueue_command,
     get_agent,
     init_db,
@@ -869,7 +871,7 @@ done:
     assert [event["kind"] for event in events] == ["started"]
 
 
-def test_runtime_retries_abandoned_turn_from_resume_state(tmp_path: Path, monkeypatch: Any) -> None:
+def test_runtime_pauses_after_aborted_turn_from_resume_state(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     conn = connect()
     init_db(conn)
@@ -893,7 +895,7 @@ done:
     )
     agent_id = create_runtime_agent(conn, flow_path, {})
 
-    class AbandonBackend(FakeBackend):
+    class AbortBackend(FakeBackend):
         def __init__(self) -> None:
             super().__init__()
             self.poll_count = 0
@@ -902,38 +904,30 @@ done:
             self.poll_count += 1
             if self.poll_count == 1:
                 return TurnObservation(
-                    status="abandoned",
+                    status="aborted",
                     thread_id=f"thread-{agent['id']}",
                     rollout_path=f"/tmp/fake-{agent['id']}.jsonl",
                     turn_id="turn-1",
                     started_at=agent["current_turn_started_at"],
+                    ended_at=format_utc(utc_now()),
+                    abort_reason="interrupted",
                 )
             return super().poll_turn(agent)
 
-    backend = AbandonBackend()
-    backend.set_script(
-        agent_id,
-        [
-            "worked after retry",
-            '{"choice":"done","reason":"finished"}',
-        ],
-    )
+    backend = AbortBackend()
     runtime = Runtime(backend=backend)
 
     runtime.tick(conn)
     runtime.tick(conn)
     agent = dict(get_agent(conn, agent_id))
-    assert agent["phase"] == "resume_state"
+    assert agent["phase"] == "paused"
+    assert agent["substate"] == "interaction"
     assert agent["current_turn_started_at"] == ""
-
-    runtime.tick(conn)
-    agent = dict(get_agent(conn, agent_id))
-    assert agent["phase"] == "working"
-    assert agent["current_turn_kind"] == "resume_prompt"
 
     events = [dict(row) for row in list_agent_events(conn, agent_id)]
     assert [event["kind"] for event in events][-1] == "error"
-    assert "interrupted and returned to prompt" in events[-1]["reason"]
+    assert json.loads(events[-1]["payload_json"])["auto_retry"] is False
+    assert "interrupted" in events[-1]["reason"]
 
 
 def test_runtime_wait_for_child_parks_and_wakes_in_same_state(tmp_path: Path, monkeypatch: Any) -> None:
@@ -1176,3 +1170,69 @@ done:
     assert agent["status_message"] == "Needs help"
     assert events[-1]["kind"] == "needs_help"
     assert events[-1]["reason"] == "prompt submission was not acknowledged"
+
+
+def test_runtime_tick_survives_codex_auth_submission_error(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+
+    class BrokenBackend(FakeBackend):
+        def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
+            del agent, prompt, request_id
+            raise RuntimeError("Codex authentication failed; run `codex logout` and `codex login`")
+
+    runtime = Runtime(backend=BrokenBackend())
+    runtime.tick(conn)
+
+    agent = dict(get_agent(conn, agent_id))
+    events = [dict(row) for row in list_agent_events(conn, agent_id)]
+    assert agent["substate"] == "needs_help"
+    assert agent["phase"] == "paused"
+    assert agent["last_error"] == "Codex authentication failed; run `codex logout` and `codex login`"
+    assert agent["status_message"] == "Needs help"
+    assert events[-1]["kind"] == "needs_help"
+    assert events[-1]["reason"] == "Codex authentication failed; run `codex logout` and `codex login`"
+
+
+def test_runtime_run_forever_retries_transient_database_lock(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    runtime = Runtime(backend=FakeBackend())
+    call_count = {"value": 0}
+
+    def fake_tick(_conn: Any) -> None:
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        runtime._running = False
+
+    monkeypatch.setattr(runtime, "tick", fake_tick)
+    monkeypatch.setattr("flow.runtime.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("flow.runtime.signal.signal", lambda *_args, **_kwargs: None)
+
+    assert runtime.run_forever() == 0
+    assert call_count["value"] == 2
+
+    conn = connect()
+    init_db(conn)
+    exit_info = daemon_exit_info(conn)
+    assert exit_info["last_exit_kind"] == "clean"

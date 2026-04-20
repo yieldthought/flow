@@ -11,12 +11,14 @@ from flow.backend import (
     CodexBackend,
     TurnObservation,
     _attach_env,
+    _codex_launch_failure_reason,
     _find_turn,
     _format_agent_args,
     _is_codex_process_name,
     _looks_like_codex_prompt_ready,
     _looks_like_codex_trust_prompt,
     _looks_like_codex_tui_ready,
+    _resolve_codex_launcher,
     _session_env_passthrough,
     _session_env_unset_names,
     _thread_name_updated_seen,
@@ -65,6 +67,38 @@ def test_launch_command_disables_app_server_tui() -> None:
 
     assert "--disable tui_app_server" in command
     assert "-c trust_level=trusted" in command
+
+
+def test_launch_command_uses_resolved_codex_launcher(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    monkeypatch.setattr(
+        "flow.backend._resolve_codex_launcher",
+        lambda: ("/home/moconnor/.nvm/versions/node/v20.20.0/bin/codex", "/home/moconnor/.nvm/versions/node/v20.20.0/bin"),
+    )
+
+    command = backend._launch_command({"cwd": "/tmp/work", "mode": "yolo", "thinking": "xhigh"})
+
+    assert command.startswith(
+        "env PATH=/home/moconnor/.nvm/versions/node/v20.20.0/bin:$PATH /home/moconnor/.nvm/versions/node/v20.20.0/bin/codex"
+    )
+
+
+def test_resolve_codex_launcher_falls_back_to_real_home_nvm(monkeypatch: object, tmp_path: Path) -> None:
+    real_home = tmp_path / "real-home"
+    node_bin = real_home / ".nvm" / "versions" / "node" / "v22.22.1" / "bin"
+    node_bin.mkdir(parents=True)
+    (node_bin / "codex").write_text("", encoding="utf-8")
+    (node_bin / "node").write_text("", encoding="utf-8")
+    (node_bin / "codex").chmod(0o755)
+    (node_bin / "node").chmod(0o755)
+
+    monkeypatch.setattr("flow.backend.shutil.which", lambda name: None)
+    monkeypatch.setattr("flow.backend._real_user_home", lambda: real_home)
+
+    codex_executable, codex_bin_dir = _resolve_codex_launcher()
+
+    assert codex_executable == str(node_bin / "codex")
+    assert codex_bin_dir == str(node_bin)
 
 
 def test_new_session_command_carries_runtime_specific_env(monkeypatch: object) -> None:
@@ -467,13 +501,12 @@ def test_visible_prompt_content_returns_nonempty_prompt_text() -> None:
     assert _visible_prompt_content(text) == "Work on the following state instructions:"
 
 
-def test_set_thread_name_submits_inline_rename_and_waits_for_confirmation(monkeypatch: object) -> None:
+def test_set_thread_name_submits_inline_rename_and_waits_for_rollout_event(monkeypatch: object) -> None:
     backend = CodexBackend()
     calls: list[list[str]] = []
     waited: list[str] = []
     cleared: list[str] = []
     settled: list[tuple[str, str]] = []
-    confirmations: list[tuple[str, str]] = []
     captured_texts = iter(["›\n\n  gpt-5.4 xhigh · /localdev/moconnor/mport", "baseline"])
 
     monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session: waited.append(session))
@@ -483,12 +516,7 @@ def test_set_thread_name_submits_inline_rename_and_waits_for_confirmation(monkey
     monkeypatch.setattr(
         backend,
         "_wait_for_thread_rename_event",
-        lambda agent, name, started_after, timeout_seconds=10.0: False,
-    )
-    monkeypatch.setattr(
-        backend,
-        "_wait_for_thread_rename_confirmation",
-        lambda session, name, timeout_seconds=10.0: confirmations.append((session, name)),
+        lambda agent, name, started_after, timeout_seconds=10.0: True,
     )
 
     def fake_run_tmux(args: list[str], check: bool = True) -> SimpleNamespace:
@@ -504,27 +532,31 @@ def test_set_thread_name_submits_inline_rename_and_waits_for_confirmation(monkey
     assert waited == ["flow-agent-9", "flow-agent-9"]
     assert cleared == ["flow-agent-9"]
     assert settled == [("flow-agent-9:0.0", "baseline")]
-    assert confirmations == [("flow-agent-9", "[flow 9] demo env=prod")]
     assert calls[0][0] == "load-buffer"
     assert calls[1][:4] == ["paste-buffer", "-d", "-t", "flow-agent-9:0.0"]
     assert calls[2] == ["send-keys", "-t", "flow-agent-9:0.0", "Enter"]
 
 
-def test_set_thread_name_skips_when_prompt_buffer_is_nonempty(monkeypatch: object) -> None:
+def test_set_thread_name_does_not_skip_ready_placeholder_prompt(monkeypatch: object) -> None:
     backend = CodexBackend()
     calls: list[list[str]] = []
     waited: list[str] = []
     cleared: list[str] = []
     prompt_text = """
-› Work on the following state instructions:
-  Prepare the local workspace.
+› Explain this codebase
 
   gpt-5.4 xhigh · /localdev/moconnor/mport
 """.strip()
 
     monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session: waited.append(session))
-    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: prompt_text)
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "baseline" if cleared else prompt_text)
     monkeypatch.setattr(backend, "_clear_prompt_input", lambda session: cleared.append(session))
+    monkeypatch.setattr(backend, "_wait_for_paste_settle", lambda target, baseline: None)
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_thread_rename_event",
+        lambda agent, name, started_after, timeout_seconds=10.0: True,
+    )
 
     def fake_run_tmux(args: list[str], check: bool = True) -> SimpleNamespace:
         del check
@@ -535,10 +567,12 @@ def test_set_thread_name_skips_when_prompt_buffer_is_nonempty(monkeypatch: objec
 
     success = backend.set_thread_name({"tmux_session": "flow-agent-9"}, "[flow 9] demo env=prod")
 
-    assert success is None
-    assert waited == ["flow-agent-9"]
-    assert cleared == []
-    assert calls == []
+    assert success is True
+    assert waited == ["flow-agent-9", "flow-agent-9"]
+    assert cleared == ["flow-agent-9"]
+    assert calls[0][0] == "load-buffer"
+    assert calls[1][:4] == ["paste-buffer", "-d", "-t", "flow-agent-9:0.0"]
+    assert calls[2] == ["send-keys", "-t", "flow-agent-9:0.0", "Enter"]
 
 
 def test_thread_name_updated_seen_matches_rollout_event() -> None:
@@ -562,7 +596,7 @@ def test_thread_name_updated_seen_matches_rollout_event() -> None:
     )
 
 
-def test_poll_turn_marks_stale_prompt_return_without_output_as_abandoned(monkeypatch: object) -> None:
+def test_poll_turn_keeps_turn_running_until_rollout_explicitly_ends_it(monkeypatch: object) -> None:
     backend = CodexBackend()
     events = [
         {
@@ -578,9 +612,6 @@ def test_poll_turn_marks_stale_prompt_return_without_output_as_abandoned(monkeyp
     ]
     monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("/tmp/fake.jsonl", "thread-1"))
     monkeypatch.setattr("flow.backend._read_rollout_events", lambda path: events)
-    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "› Explain this codebase\n\n  gpt-5.4 xhigh · /localdev/moconnor/mport")
-    monkeypatch.setattr(backend, "_pane_current_command", lambda target: "node")
-    monkeypatch.setattr("flow.backend.utc_now", lambda: datetime(2026, 4, 18, 13, 36, 0, tzinfo=timezone.utc))
 
     observation = backend.poll_turn(
         {
@@ -594,11 +625,11 @@ def test_poll_turn_marks_stale_prompt_return_without_output_as_abandoned(monkeyp
         }
     )
 
-    assert observation.status == "abandoned"
+    assert observation.status == "running"
     assert observation.turn_id == "turn-1"
 
 
-def test_poll_turn_marks_empty_completed_turn_as_abandoned(monkeypatch: object) -> None:
+def test_poll_turn_treats_empty_completed_turn_as_completed(monkeypatch: object) -> None:
     backend = CodexBackend()
     events = [
         {
@@ -614,8 +645,6 @@ def test_poll_turn_marks_empty_completed_turn_as_abandoned(monkeypatch: object) 
     ]
     monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("/tmp/fake.jsonl", "thread-1"))
     monkeypatch.setattr("flow.backend._read_rollout_events", lambda path: events)
-    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "› Explain this codebase\n\n  gpt-5.4 xhigh · /localdev/moconnor/mport")
-    monkeypatch.setattr(backend, "_pane_current_command", lambda target: "node")
 
     observation = backend.poll_turn(
         {
@@ -629,8 +658,42 @@ def test_poll_turn_marks_empty_completed_turn_as_abandoned(monkeypatch: object) 
         }
     )
 
-    assert observation.status == "abandoned"
+    assert observation.status == "completed"
     assert observation.turn_id == "turn-1"
+
+
+def test_poll_turn_reports_explicit_turn_aborted(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    events = [
+        {
+            "timestamp": "2026-04-18T13:35:51.737Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "turn-1"},
+        },
+        {
+            "timestamp": "2026-04-18T13:35:52.031Z",
+            "type": "event_msg",
+            "payload": {"type": "turn_aborted", "turn_id": "turn-1", "reason": "interrupted"},
+        },
+    ]
+    monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("/tmp/fake.jsonl", "thread-1"))
+    monkeypatch.setattr("flow.backend._read_rollout_events", lambda path: events)
+
+    observation = backend.poll_turn(
+        {
+            "tmux_session": "flow-agent-1",
+            "thread_id": "thread-1",
+            "rollout_path": "/tmp/fake.jsonl",
+            "launch_marker": "marker",
+            "current_turn_started_at": "2026-04-18T13:35:49.642966Z",
+            "current_turn_id": "turn-1",
+            "current_request_id": "req-1",
+        }
+    )
+
+    assert observation.status == "aborted"
+    assert observation.turn_id == "turn-1"
+    assert observation.abort_reason == "interrupted"
 
 
 def test_poll_turn_keeps_recent_output_without_task_complete_running(monkeypatch: object) -> None:
@@ -661,9 +724,6 @@ def test_poll_turn_keeps_recent_output_without_task_complete_running(monkeypatch
     ]
     monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("/tmp/fake.jsonl", "thread-2"))
     monkeypatch.setattr("flow.backend._read_rollout_events", lambda path: events)
-    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "› Find and fix a bug in @filename\n\n  gpt-5.4 xhigh · /localdev/moconnor/mport")
-    monkeypatch.setattr(backend, "_pane_current_command", lambda target: "node")
-    monkeypatch.setattr("flow.backend.utc_now", lambda: datetime(2026, 4, 18, 16, 15, 20, tzinfo=timezone.utc))
 
     observation = backend.poll_turn(
         {
@@ -779,38 +839,71 @@ def test_find_turn_prefers_matching_request_id_over_started_after() -> None:
     assert turn["request_id"] == "req-abc123"
 
 
-def test_wait_for_turn_start_accepts_in_progress_pane_without_rollout(monkeypatch: object) -> None:
+def test_wait_for_turn_start_accepts_request_ack_without_task_start(monkeypatch: object) -> None:
     backend = CodexBackend()
+    events = [
+        {
+            "timestamp": "2026-04-18T08:16:37.800Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": "[flow-control]\nrequest_id: req-123\n[/flow-control]\n\nContinue.",
+            },
+        }
+    ]
 
-    monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("", ""))
-    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "• Working (23s • esc to interrupt)")
-    monkeypatch.setattr(backend, "_pane_current_command", lambda target: "node")
+    monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("/tmp/fake.jsonl", "thread-9"))
+    monkeypatch.setattr("flow.backend._read_rollout_events", lambda path: events)
 
     observation = backend._wait_for_turn_start(  # noqa: SLF001
         {"tmux_session": "flow-agent-9"},
         started_after=parse_utc("2026-04-18T08:16:37Z"),
         timeout_seconds=0.2,
+        request_id="req-123",
     )
 
     assert observation.status == "running"
-    assert observation.started_at == "2026-04-18T08:16:37Z"
+    assert observation.started_at == "2026-04-18T08:16:37.800Z"
 
 
-def test_wait_for_turn_start_preserves_subsecond_start_marker_without_rollout(monkeypatch: object) -> None:
+def test_wait_for_turn_start_requires_rollout_acknowledgement(monkeypatch: object) -> None:
     backend = CodexBackend()
 
     monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("", ""))
-    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "• Working (2s • esc to interrupt)")
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "")
     monkeypatch.setattr(backend, "_pane_current_command", lambda target: "node")
 
-    observation = backend._wait_for_turn_start(  # noqa: SLF001
-        {"tmux_session": "flow-agent-9"},
-        started_after=parse_utc("2026-04-18T08:16:37.654321Z"),
-        timeout_seconds=0.2,
-    )
+    with pytest.raises(RuntimeError, match="prompt submission was not acknowledged"):
+        backend._wait_for_turn_start(  # noqa: SLF001
+            {"tmux_session": "flow-agent-9"},
+            started_after=parse_utc("2026-04-18T08:16:37.654321Z"),
+            timeout_seconds=0.0,
+            request_id="req-123",
+        )
 
-    assert observation.status == "running"
-    assert observation.started_at == "2026-04-18T08:16:37.654321Z"
+
+def test_wait_for_turn_start_reports_codex_auth_failure_from_pane(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    pane_text = """
+■ Your access token could not be refreshed because your refresh token was
+already used. Please log out and sign in again.
+
+› Improve documentation in @filename
+
+  gpt-5.4 xhigh fast
+""".strip()
+
+    monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("", ""))
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: pane_text)
+    monkeypatch.setattr(backend, "_pane_current_command", lambda target: "codex-aarch64-a")
+
+    with pytest.raises(RuntimeError, match="Codex authentication failed; run `codex logout` and `codex login`"):
+        backend._wait_for_turn_start(  # noqa: SLF001
+            {"tmux_session": "flow-agent-9"},
+            started_after=parse_utc("2026-04-18T08:16:37.654321Z"),
+            timeout_seconds=0.0,
+            request_id="req-123",
+        )
 
 
 def test_attach_env_unsets_tmux(monkeypatch: object) -> None:
@@ -886,6 +979,22 @@ def test_ensure_session_relaunches_when_tmux_pane_is_not_running_codex(monkeypat
 
     assert calls == ["interrupt", "launch", "wait"]
     assert result["launch_command"] == backend._launch_signature(agent)
+
+
+def test_session_has_live_codex_rejects_auth_failed_pane(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    pane_text = """
+■ Your access token could not be refreshed because your refresh token was
+already used. Please log out and sign in again.
+""".strip()
+
+    monkeypatch.setattr(
+        "flow.backend.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="codex-aarch64-a\n"),
+    )
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: pane_text)
+
+    assert backend._session_has_live_codex("flow-123-agent-7") is False  # noqa: SLF001
 
 
 def test_wait_for_codex_ready_checks_ready_state_at_timeout_boundary(monkeypatch: object) -> None:
@@ -981,6 +1090,37 @@ def test_wait_for_codex_ready_waits_for_visible_prompt_not_just_banner(monkeypat
     monkeypatch.setattr("flow.backend.utc_now", lambda: next(time_values))
 
     backend._wait_for_codex_ready("flow-agent-1", timeout_seconds=0.4)
+
+
+def test_wait_for_codex_ready_fails_fast_on_shell_launch_error(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    error_text = """
+(venv) moconnor@host:/localdev/moconnor/mport$ codex --disable tui_app_server --no-alt-screen --cd /localdev/moconnor/mport
+bash: codex: command not found
+""".strip()
+
+    def fake_run(args: list[str], capture_output: bool = True, text: bool = True) -> SimpleNamespace:
+        del capture_output, text
+        if args[:3] == ["tmux", "display-message", "-p"]:
+            return SimpleNamespace(returncode=0, stdout="bash\n")
+        if args[:3] == ["tmux", "capture-pane", "-pt"]:
+            return SimpleNamespace(returncode=0, stdout=error_text)
+        raise AssertionError(f"unexpected subprocess args: {args}")
+
+    monkeypatch.setattr("flow.backend.subprocess.run", fake_run)
+    monkeypatch.setattr("flow.backend.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="Codex failed to launch"):
+        backend._wait_for_codex_ready("flow-agent-1", timeout_seconds=30.0)
+
+
+def test_codex_launch_failure_reason_detects_shell_missing_binary() -> None:
+    text = """
+(venv) moconnor@host:/localdev/moconnor/mport$ codex --disable tui_app_server --no-alt-screen --cd /localdev/moconnor/mport
+bash: codex: command not found
+""".strip()
+
+    assert _codex_launch_failure_reason(text, current_command="bash") == "bash: codex: command not found"
 
 
 def test_attach_many_sizes_viewer_session_and_resizes_nested_sessions(monkeypatch: object) -> None:

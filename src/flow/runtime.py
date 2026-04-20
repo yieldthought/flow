@@ -459,6 +459,7 @@ class Runtime:
 
         agent["desired_mode"] = state.mode or flow.mode or agent["mode"]
         agent["desired_thinking"] = state.thinking or flow.thinking or agent["thinking"]
+        agent["desired_fast"] = _state_fast_value(state.fast, flow.fast, agent.get("fast"))
 
         if state.end and not state.prompt and agent["phase"] in {"enter_state", "resume_state"}:
             self._transition_terminal(
@@ -1482,6 +1483,14 @@ def _selected_transition(state: StateSpec, choice: str) -> TransitionSpec | None
         if transition.target == choice:
             return transition
     return None
+
+
+def _state_fast_value(state_fast: bool | None, flow_fast: bool | None, agent_fast: Any) -> bool:
+    if state_fast is not None:
+        return state_fast
+    if flow_fast is not None:
+        return flow_fast
+    return bool(agent_fast)
 
 
 def _auto_transition(state: StateSpec) -> TransitionSpec | None:

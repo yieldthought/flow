@@ -11,11 +11,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .common import DEFAULT_MODE, DEFAULT_THINKING, format_utc, parse_utc, utc_now
+from .common import DEFAULT_FAST, DEFAULT_MODE, DEFAULT_THINKING, format_utc, parse_utc, utc_now
 from .flowfile import FlowSpec
 from .paths import db_path, ensure_home
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 META_DEFAULTS = {
     "schema_version": str(SCHEMA_VERSION),
     "daemon_pid": "",
@@ -86,6 +86,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             cwd TEXT NOT NULL,
             mode TEXT NOT NULL,
             thinking TEXT NOT NULL,
+            fast INTEGER NOT NULL DEFAULT 0,
             args_json TEXT NOT NULL,
             tmux_session TEXT NOT NULL,
             thread_id TEXT NOT NULL DEFAULT '',
@@ -94,6 +95,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             launch_command TEXT NOT NULL DEFAULT '',
             desired_mode TEXT NOT NULL DEFAULT '',
             desired_thinking TEXT NOT NULL DEFAULT '',
+            desired_fast INTEGER NOT NULL DEFAULT 0,
             current_turn_id TEXT NOT NULL DEFAULT '',
             current_turn_kind TEXT NOT NULL DEFAULT '',
             current_turn_started_at TEXT NOT NULL DEFAULT '',
@@ -191,6 +193,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     if "current_request_id" not in columns:
         conn.execute("ALTER TABLE agents ADD COLUMN current_request_id TEXT NOT NULL DEFAULT ''")
         migrated = True
+    if "fast" not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN fast INTEGER NOT NULL DEFAULT 0")
+        migrated = True
+    if "desired_fast" not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN desired_fast INTEGER NOT NULL DEFAULT 0")
+        migrated = True
     if "actor" not in command_columns:
         conn.execute("ALTER TABLE commands ADD COLUMN actor TEXT NOT NULL DEFAULT ''")
         migrated = True
@@ -209,6 +217,8 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
     if "ready_at" not in columns:
         return False
     if "current_request_id" not in columns:
+        return False
+    if "fast" not in columns or "desired_fast" not in columns:
         return False
     command_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(commands)")}
     if "actor" not in command_columns or "source" not in command_columns:
@@ -251,16 +261,17 @@ def create_agent(
     mode: str,
     thinking: str,
     args_json: str,
+    fast: bool = DEFAULT_FAST,
 ) -> int:
     now = format_utc(utc_now())
     cur = conn.execute(
         """
         INSERT INTO agents(
             flow_snapshot_id, flow_name, source_path, backend, start_state, current_state, substate, phase,
-            cwd, mode, thinking, args_json, tmux_session, desired_mode, desired_thinking, created_at,
+            cwd, mode, thinking, fast, args_json, tmux_session, desired_mode, desired_thinking, desired_fast, created_at,
             updated_at, state_entered_at
         )
-        VALUES(?, ?, ?, ?, ?, ?, 'normal', 'enter_state', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, 'normal', 'enter_state', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             flow_snapshot_id,
@@ -272,10 +283,12 @@ def create_agent(
             cwd,
             mode or DEFAULT_MODE,
             thinking or DEFAULT_THINKING,
+            int(bool(fast)),
             args_json,
             f"flow-agent-PLACEHOLDER",
             mode or DEFAULT_MODE,
             thinking or DEFAULT_THINKING,
+            int(bool(fast)),
             now,
             now,
             now,

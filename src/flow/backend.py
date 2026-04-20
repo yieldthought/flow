@@ -352,6 +352,7 @@ class CodexBackend(AgentBackend):
         )
         mode = self._effective_mode(agent)
         thinking = agent.get("desired_thinking") or agent.get("thinking") or "xhigh"
+        fast = _agent_fast_enabled(agent.get("desired_fast"), agent.get("fast"))
         add_dirs: list[str] = []
         if mode in {"full-auto", "workspace-write"}:
             add_dirs.append(ensure_scratchpad_dir(agent))
@@ -368,6 +369,11 @@ class CodexBackend(AgentBackend):
             parts.extend(["--add-dir", shlex.quote(add_dir)])
         parts.extend(["-c", shlex.quote("trust_level=trusted")])
         parts.extend(["-c", shlex.quote(f"model_reasoning_effort={thinking}")])
+        if fast:
+            parts.extend(["-c", shlex.quote("service_tier=fast")])
+            parts.extend(["-c", shlex.quote("features.fast_mode=true")])
+        else:
+            parts.extend(["-c", shlex.quote("features.fast_mode=false")])
         parts.extend(["-c", shlex.quote("check_for_update_on_startup=false")])
         return parts
 
@@ -1185,6 +1191,8 @@ def _looks_like_codex_prompt_ready(text: str, *, current_command: str = "") -> b
             continue
         return True
     return False
+
+
 def _visible_prompt_content(text: str) -> str | None:
     lines = [line.rstrip("\r") for line in text.splitlines()]
     tail = lines[-24:]
@@ -1199,6 +1207,25 @@ def _visible_prompt_content(text: str) -> str | None:
 
 def _sanitize_thread_name(name: str) -> str:
     return " ".join(str(name).replace("\x00", "").split())
+
+
+def _agent_fast_enabled(desired_fast: Any, current_fast: Any) -> bool:
+    if desired_fast is not None and str(desired_fast).strip() != "":
+        return _coerce_bool(desired_fast)
+    return _coerce_bool(current_fast)
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(value)
 
 
 def _pane_tail_summary(text: str, *, lines: int = 6) -> str:

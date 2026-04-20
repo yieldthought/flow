@@ -18,6 +18,7 @@ IMPLICIT_TRANSITION_FINISH = "finish"
 IMPLICIT_TRANSITION_WAIT_FOR_CHILD = "wait-for-child"
 DEFAULT_MODE = "yolo"
 DEFAULT_THINKING = "xhigh"
+DEFAULT_FAST = False
 VALID_THINKING = {"low", "medium", "high", "xhigh"}
 VALID_MODES = {"yolo", "full-auto", "workspace-write", "danger-full-access"}
 PLACEHOLDER_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")

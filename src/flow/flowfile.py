@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from .common import (
+    DEFAULT_FAST,
     DEFAULT_MODE,
     DEFAULT_THINKING,
     PLACEHOLDER_RE,
@@ -46,6 +47,7 @@ class StateSpec:
     wait: str | None = None
     mode: str | None = None
     thinking: str | None = None
+    fast: bool | None = None
     transitions: tuple[TransitionSpec, ...] = ()
 
 
@@ -57,6 +59,7 @@ class FlowSpec:
     path: str | None
     mode: str | None
     thinking: str | None
+    fast: bool | None
     args: dict[str, ArgSpec]
     states: dict[str, StateSpec]
     source_path: str
@@ -139,6 +142,9 @@ def load_flow(path: str | Path) -> FlowSpec:
     thinking = flow_block.get("thinking")
     if thinking is not None and thinking not in VALID_THINKING:
         raise ValueError(f"invalid flow thinking '{thinking}'")
+    fast = flow_block.get("fast")
+    if fast is not None and not isinstance(fast, bool):
+        raise ValueError("flow.fast must be a boolean when provided")
 
     return FlowSpec(
         name=name.strip(),
@@ -147,6 +153,7 @@ def load_flow(path: str | Path) -> FlowSpec:
         path=path_value,
         mode=mode,
         thinking=thinking,
+        fast=fast,
         args=args,
         states=states,
         source_path=str(source),
@@ -206,6 +213,8 @@ def validate_flow(flow: FlowSpec) -> ValidationResult:
             errors.append(f"state '{state.name}' has invalid mode '{state.mode}'")
         if state.thinking is not None and state.thinking not in VALID_THINKING:
             errors.append(f"state '{state.name}' has invalid thinking '{state.thinking}'")
+        if state.fast is not None and not isinstance(state.fast, bool):
+            errors.append(f"state '{state.name}' has invalid fast '{state.fast}'")
 
     unused_args = sorted(set(flow.args) - set(flow.placeholders))
     for name in unused_args:
@@ -241,6 +250,7 @@ def render_flow(flow: FlowSpec, values: dict[str, str], cwd_override: str | None
             wait=_render_wait_string(state.wait, values),
             mode=state.mode,
             thinking=state.thinking,
+            fast=state.fast,
             transitions=tuple(
                 TransitionSpec(
                     target=transition.target,
@@ -262,6 +272,7 @@ def render_flow(flow: FlowSpec, values: dict[str, str], cwd_override: str | None
         path=rendered_path,
         mode=flow.mode or DEFAULT_MODE,
         thinking=flow.thinking or DEFAULT_THINKING,
+        fast=flow.fast if flow.fast is not None else DEFAULT_FAST,
         args=args,
         states=rendered_states,
         source_path=flow.source_path,
@@ -397,6 +408,7 @@ def flow_to_dict(flow: FlowSpec) -> dict[str, Any]:
         "path": flow.path,
         "mode": flow.mode,
         "thinking": flow.thinking,
+        "fast": flow.fast,
         "args": {
             name: {"name": spec.name, "help": spec.help, "default": spec.default}
             for name, spec in flow.args.items()
@@ -410,6 +422,7 @@ def flow_to_dict(flow: FlowSpec) -> dict[str, Any]:
                 "wait": state.wait,
                 "mode": state.mode,
                 "thinking": state.thinking,
+                "fast": state.fast,
                 "transitions": [
                     {"target": transition.target, "condition": transition.condition, "wait": transition.wait}
                     for transition in state.transitions
@@ -430,6 +443,7 @@ def flow_from_dict(payload: dict[str, Any]) -> FlowSpec:
         path=payload.get("path"),
         mode=_normalize_stored_mode(payload.get("mode")),
         thinking=payload.get("thinking"),
+        fast=_normalize_stored_fast(payload.get("fast")),
         args={
             name: ArgSpec(
                 name=str(spec.get("name") or name),
@@ -447,6 +461,7 @@ def flow_from_dict(payload: dict[str, Any]) -> FlowSpec:
                 wait=None if state.get("wait") is None else str(state.get("wait")),
                 mode=_normalize_stored_mode(state.get("mode")),
                 thinking=state.get("thinking"),
+                fast=_normalize_stored_fast(state.get("fast")),
                 transitions=tuple(
                     TransitionSpec(
                         target=str(item["target"]),
@@ -527,6 +542,7 @@ def _parse_state(name: str, raw: dict[str, Any]) -> StateSpec:
         raise ValueError(f"state '{name}' wait must be a string like '10m'")
     mode = raw.get("mode")
     thinking = raw.get("thinking")
+    fast = raw.get("fast")
     return StateSpec(
         name=name,
         start=bool(raw.get("start")),
@@ -535,6 +551,7 @@ def _parse_state(name: str, raw: dict[str, Any]) -> StateSpec:
         wait=wait.strip() if isinstance(wait, str) and wait.strip() else None,
         mode=mode,
         thinking=thinking,
+        fast=fast,
         transitions=tuple(transitions),
     )
 
@@ -608,6 +625,21 @@ def _validate_wait_literal(value: str | None, context: str, errors: list[str]) -
 def _normalize_stored_mode(value: Any) -> Any:
     # Legacy snapshots may still contain read-only from before scratchpads existed.
     return "workspace-write" if value == "read-only" else value
+
+
+def _normalize_stored_fast(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(value)
 
 
 def _catalog_candidates(root: Path) -> tuple[Path, ...]:

@@ -184,6 +184,7 @@ Top-level `flow:` fields:
 - `path`: initial working directory for new agents (optional, defaults to the current working directory where `flow start` is run)
 - `mode`: default Codex permissions mode (optional, defaults to `yolo`, other options are `danger-full-access`, `full-auto`, and `workspace-write`)
 - `thinking`: default flow reasoning effort (optional, default `xhigh`, other options are `high`, `medium` and `low`)
+- `fast`: default Codex fast mode toggle (optional, default `false`)
 - `args`: named CLI arguments for placeholders and their help/defaults (optional if the flow uses no placeholders)
 
 State fields:
@@ -194,6 +195,7 @@ State fields:
 - `prompt`: text sent to the agent on entry (optional; promptless non-end states move directly to transition questions, and promptless end states finish immediately)
 - `mode`: per-state mode override (optional default set in `flow:` header)
 - `thinking`: per-state thinking override (optional, default set in `flow:` header)
+- `fast`: per-state fast mode override (optional, default set in `flow:` header)
 - `transitions`: list of outgoing transitions (required unless `end: true`, and forbidden on end states)
 
 Transition fields:

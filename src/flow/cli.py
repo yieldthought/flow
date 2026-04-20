@@ -277,6 +277,7 @@ def cmd_start(conn: Any, path: str, state_token: str | None, extra: list[str]) -
         mode=rendered.mode or "yolo",
         thinking=rendered.thinking or "xhigh",
         args_json=args_json,
+        fast=bool(rendered.fast),
     )
     ensure_scratchpad_dir({"id": agent_id})
     update_agent(conn, agent_id, launch_marker=f"flow-agent-{agent_id}-{uuid.uuid4().hex[:8]}")

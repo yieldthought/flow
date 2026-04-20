@@ -109,6 +109,35 @@ done:
     assert rendered.description == "Inspect tt-metal and report status."
 
 
+def test_load_flow_parses_fast_overrides(tmp_path: Path) -> None:
+    path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  fast: true
+
+start:
+  start: true
+  fast: false
+  prompt: Hello
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+
+    flow = load_flow(path)
+    rendered = render_flow(flow, {}, cwd_override=str(tmp_path))
+
+    assert flow.fast is True
+    assert flow.states["start"].fast is False
+    assert rendered.fast is True
+    assert rendered.states["start"].fast is False
+
+
 def test_validate_rejects_undeclared_placeholder(tmp_path: Path) -> None:
     path = write_flow(
         tmp_path / "bad.yaml",
@@ -132,6 +161,33 @@ done:
 
     assert not result.ok
     assert any("placeholder '{{repo}}' is used but not declared in flow.args" in item for item in result.errors)
+
+
+def test_validate_rejects_invalid_fast_values(tmp_path: Path) -> None:
+    path = write_flow(
+        tmp_path / "bad.yaml",
+        """
+flow:
+  name: demo
+  fast: maybe
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+
+    try:
+        load_flow(path)
+    except ValueError as exc:
+        assert str(exc) == "flow.fast must be a boolean when provided"
+    else:
+        raise AssertionError("expected flow.fast validation error")
 
 
 def test_parse_start_arguments_renders_path_placeholders(tmp_path: Path) -> None:

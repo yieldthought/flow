@@ -67,6 +67,16 @@ def test_launch_command_disables_app_server_tui() -> None:
 
     assert "--disable tui_app_server" in command
     assert "-c trust_level=trusted" in command
+    assert "-c features.fast_mode=false" in command
+
+
+def test_launch_command_can_enable_fast_mode() -> None:
+    backend = CodexBackend()
+
+    command = backend._launch_command({"cwd": "/tmp/work", "mode": "yolo", "thinking": "xhigh", "fast": 1})
+
+    assert "-c service_tier=fast" in command
+    assert "-c features.fast_mode=true" in command
 
 
 def test_launch_command_uses_resolved_codex_launcher(monkeypatch: object) -> None:

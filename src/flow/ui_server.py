@@ -119,7 +119,7 @@ def _queue_command(agent_id: int, kind: str, payload: dict[str, Any]) -> dict[st
             raise HTTPException(status_code=404, detail=f"unknown agent {agent_id}")
         if not _ensure_daemon(conn):
             raise HTTPException(status_code=503, detail="failed to start runtime daemon")
-        command_id = enqueue_command(conn, agent_id, kind, payload)
+        command_id = enqueue_command(conn, agent_id, kind, payload, actor="ui", source="ui")
         conn.commit()
         error = _wait_for_command(conn, command_id)
         if error:

@@ -1,0 +1,52 @@
+flow:
+  name: stress-child-parent
+  description: Exercise a parent/child wait-for-child handoff and wake-up.
+  mode: workspace-write
+  thinking: low
+  args:
+    child_flow:
+      help: absolute path to the child flow YAML
+    flow_home:
+      help: exact FLOW_HOME for this stress scenario
+
+launch-child:
+  start: true
+  prompt: |
+    This is a flow stress test.
+
+    Start the child flow with:
+    `FLOW_HOME="{{flow_home}}" flow start "{{child_flow}}"`
+
+    Capture the new child agent id from the command output.
+    Do not do anything else in this state.
+
+    When the runtime later asks for a transition choice, choose `wait-for-child`
+    and include that child id as the only entry in `child_ids`.
+
+    After the child finishes and you are resumed in this same state, use the
+    child wake-up turn to inspect the result and your child's scratchpad if it
+    exists. When the runtime then asks for a transition choice, choose
+    `after-child`.
+  transitions:
+    - go: after-child
+
+after-child:
+  prompt: |
+    The child flow has finished and you have been resumed in the parent.
+
+    Do not use any tools. Do not read or write files.
+    Reply with exactly:
+    PARENT_AFTER_CHILD_OK
+
+    When the runtime later asks for a transition choice, choose `success`.
+  transitions:
+    - if: the child completed and the parent wake-up prompt was answered correctly
+      go: success
+    - if: anything about the child handoff or wake-up went wrong
+      go: failure
+
+success:
+  end: true
+
+failure:
+  end: true

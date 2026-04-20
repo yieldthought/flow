@@ -15,7 +15,7 @@ from .common import DEFAULT_MODE, DEFAULT_THINKING, format_utc, parse_utc, utc_n
 from .flowfile import FlowSpec
 from .paths import db_path, ensure_home
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 META_DEFAULTS = {
     "schema_version": str(SCHEMA_VERSION),
     "daemon_pid": "",
@@ -37,17 +37,22 @@ REQUIRED_TABLES = {
     "agent_events",
     "daemon_events",
 }
+SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
     ensure_home()
     target = path or db_path()
-    conn = sqlite3.connect(target, isolation_level=None)
+    conn = sqlite3.connect(target, isolation_level=None, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
     return conn
+
+
+def is_locked_error(exc: sqlite3.Error | Exception) -> bool:
+    return "database is locked" in str(exc).lower()
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -92,6 +97,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             current_turn_id TEXT NOT NULL DEFAULT '',
             current_turn_kind TEXT NOT NULL DEFAULT '',
             current_turn_started_at TEXT NOT NULL DEFAULT '',
+            current_request_id TEXT NOT NULL DEFAULT '',
             last_prompt_sent_at TEXT NOT NULL DEFAULT '',
             status_message TEXT NOT NULL DEFAULT '',
             last_error TEXT NOT NULL DEFAULT '',
@@ -110,6 +116,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
             kind TEXT NOT NULL,
             payload_json TEXT NOT NULL,
+            actor TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             processed_at TEXT NOT NULL DEFAULT '',
             error_text TEXT NOT NULL DEFAULT ''
@@ -175,9 +183,19 @@ def _ensure_meta_defaults(conn: sqlite3.Connection) -> None:
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(agents)")}
+    command_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(commands)")}
     migrated = False
     if "ready_at" not in columns:
         conn.execute("ALTER TABLE agents ADD COLUMN ready_at TEXT NOT NULL DEFAULT ''")
+        migrated = True
+    if "current_request_id" not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN current_request_id TEXT NOT NULL DEFAULT ''")
+        migrated = True
+    if "actor" not in command_columns:
+        conn.execute("ALTER TABLE commands ADD COLUMN actor TEXT NOT NULL DEFAULT ''")
+        migrated = True
+    if "source" not in command_columns:
+        conn.execute("ALTER TABLE commands ADD COLUMN source TEXT NOT NULL DEFAULT ''")
         migrated = True
     if migrated or get_meta(conn, "schema_version") != str(SCHEMA_VERSION):
         set_meta(conn, "schema_version", str(SCHEMA_VERSION))
@@ -189,6 +207,11 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         return False
     columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(agents)")}
     if "ready_at" not in columns:
+        return False
+    if "current_request_id" not in columns:
+        return False
+    command_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(commands)")}
+    if "actor" not in command_columns or "source" not in command_columns:
         return False
     meta_keys = {str(row["key"]) for row in conn.execute("SELECT key FROM meta")}
     if not set(META_DEFAULTS).issubset(meta_keys):
@@ -318,11 +341,21 @@ def update_agent(conn: sqlite3.Connection, agent_id: int, **fields: Any) -> None
     conn.execute(f"UPDATE agents SET {columns} WHERE id=?", params)
 
 
-def enqueue_command(conn: sqlite3.Connection, agent_id: int, kind: str, payload: dict[str, Any] | None = None) -> int:
+def enqueue_command(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    kind: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    actor: str = "",
+    source: str = "",
+) -> int:
     now = format_utc(utc_now())
+    command_actor = actor.strip()
+    command_source = source.strip()
     cur = conn.execute(
-        "INSERT INTO commands(agent_id, kind, payload_json, created_at) VALUES(?, ?, ?, ?)",
-        (agent_id, kind, json.dumps(payload or {}, sort_keys=True), now),
+        "INSERT INTO commands(agent_id, kind, payload_json, actor, source, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+        (agent_id, kind, json.dumps(payload or {}, sort_keys=True), command_actor, command_source, now),
     )
     return int(cur.lastrowid)
 

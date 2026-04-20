@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import shlex
 import shutil
 import subprocess
@@ -31,15 +32,14 @@ class TurnObservation:
     output_text: str = ""
     raw_output: str = ""
     last_event_at: str = ""
-
-
+    abort_reason: str = ""
 class AgentBackend(ABC):
     @abstractmethod
     def ensure_session(self, agent: dict[str, Any]) -> dict[str, str]:
         raise NotImplementedError
 
     @abstractmethod
-    def send_prompt(self, agent: dict[str, Any], prompt: str) -> TurnObservation:
+    def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
         raise NotImplementedError
 
     def set_thread_name(self, agent: dict[str, Any], name: str) -> bool | None:
@@ -91,9 +91,10 @@ class CodexBackend(AgentBackend):
             self._wait_for_codex_ready(session)
         return {"launch_command": desired, "thread_id": agent.get("thread_id", "")}
 
-    def send_prompt(self, agent: dict[str, Any], prompt: str) -> TurnObservation:
+    def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
         target = f"{agent['tmux_session']}:0.0"
         self._wait_for_prompt_ready(agent["tmux_session"])
+        self._clear_prompt_input(agent["tmux_session"])
         baseline = self._capture_pane_text(target)
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             handle.write(prompt)
@@ -102,28 +103,12 @@ class CodexBackend(AgentBackend):
             self._paste_prompt(target, buffer_path, baseline)
             submitted_at = utc_now()
             self._submit_prompt(target)
-            try:
-                return self._wait_for_turn_start(agent, started_after=submitted_at, timeout_seconds=30.0)
-            except RuntimeError:
-                current_command = self._pane_current_command(target)
-                text = self._capture_pane_text(target)
-                if _looks_like_codex_prompt_ready(text, current_command=current_command):
-                    retry_baseline = text
-                    self._paste_prompt(target, buffer_path, retry_baseline)
-                    retry_submitted_at = utc_now()
-                    self._run_tmux(["send-keys", "-t", target, "Enter"])
-                    try:
-                        return self._wait_for_turn_start(agent, started_after=retry_submitted_at, timeout_seconds=30.0)
-                    except RuntimeError:
-                        pass
-                self._launch_codex(agent)
-                self._wait_for_codex_ready(agent["tmux_session"])
-                self._wait_for_prompt_ready(agent["tmux_session"], timeout_seconds=30.0)
-                relaunch_baseline = self._capture_pane_text(target)
-                self._paste_prompt(target, buffer_path, relaunch_baseline)
-                relaunch_submitted_at = utc_now()
-                self._submit_prompt(target)
-                return self._wait_for_turn_start(agent, started_after=relaunch_submitted_at, timeout_seconds=30.0)
+            return self._wait_for_turn_start(
+                agent,
+                started_after=submitted_at,
+                timeout_seconds=30.0,
+                request_id=request_id,
+            )
         finally:
             try:
                 os.unlink(buffer_path)
@@ -139,6 +124,8 @@ class CodexBackend(AgentBackend):
 
         self._wait_for_prompt_ready(session)
         baseline = self._capture_pane_text(target)
+        self._clear_prompt_input(session)
+        baseline = self._capture_pane_text(target)
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             handle.write(f"/rename {sanitized}")
             buffer_path = handle.name
@@ -146,8 +133,10 @@ class CodexBackend(AgentBackend):
             self._run_tmux(["load-buffer", buffer_path])
             self._run_tmux(["paste-buffer", "-d", "-t", target])
             self._wait_for_paste_settle(target, baseline)
+            submitted_at = utc_now()
             self._run_tmux(["send-keys", "-t", target, "Enter"])
-            self._wait_for_thread_rename_confirmation(session, sanitized)
+            if not self._wait_for_thread_rename_event(agent, sanitized, started_after=submitted_at):
+                return False
             self._wait_for_prompt_ready(session)
             return True
         except RuntimeError:
@@ -269,6 +258,7 @@ class CodexBackend(AgentBackend):
         launch_marker = agent.get("launch_marker", "") or ""
         turn_started_at = agent.get("current_turn_started_at", "") or ""
         current_turn_id = agent.get("current_turn_id", "") or ""
+        current_request_id = agent.get("current_request_id", "") or ""
 
         resolved_path, resolved_thread_id = self._resolve_rollout(thread_id, rollout_path, launch_marker, turn_started_at)
         if not resolved_path:
@@ -277,34 +267,50 @@ class CodexBackend(AgentBackend):
         events = _read_rollout_events(Path(resolved_path))
         if not events:
             return TurnObservation(status="pending", thread_id=resolved_thread_id, rollout_path=resolved_path)
+        request_acknowledged_at = _request_acknowledged_at(
+            events,
+            request_id=current_request_id,
+            started_after=turn_started_at,
+        )
 
-        turn = _find_turn(events, current_turn_id=current_turn_id, started_after=turn_started_at)
+        turn = _find_turn(
+            events,
+            current_turn_id=current_turn_id,
+            current_request_id=current_request_id,
+            started_after=turn_started_at,
+        )
         if turn is None:
-            return TurnObservation(status="pending", thread_id=resolved_thread_id, rollout_path=resolved_path)
-        if not turn["ended_at"]:
-            target = f"{agent['tmux_session']}:0.0"
-            text = self._capture_pane_text(target)
-            current_command = self._pane_current_command(target)
-            if _looks_like_codex_prompt_ready(text, current_command=current_command) and (
-                turn["output_text"] or turn["raw_output"]
-            ) and not _looks_like_codex_task_in_progress(text):
+            if request_acknowledged_at:
                 return TurnObservation(
-                    status="completed",
+                    status="running",
                     thread_id=resolved_thread_id,
                     rollout_path=resolved_path,
-                    turn_id=turn["turn_id"],
-                    started_at=turn["started_at"],
-                    ended_at=turn["last_event_at"],
-                    output_text=turn["output_text"],
-                    raw_output=turn["raw_output"],
-                    last_event_at=turn["last_event_at"],
+                    started_at=request_acknowledged_at,
+                    last_event_at=request_acknowledged_at,
                 )
+            return TurnObservation(status="pending", thread_id=resolved_thread_id, rollout_path=resolved_path)
+        if turn["status"] == "aborted":
+            return TurnObservation(
+                status="aborted",
+                thread_id=resolved_thread_id,
+                rollout_path=resolved_path,
+                turn_id=turn["turn_id"],
+                started_at=turn["started_at"],
+                ended_at=turn["ended_at"],
+                output_text=turn["output_text"],
+                raw_output=turn["raw_output"],
+                last_event_at=turn["last_event_at"],
+                abort_reason=turn["abort_reason"],
+            )
+        if turn["status"] != "completed":
             return TurnObservation(
                 status="running",
                 thread_id=resolved_thread_id,
                 rollout_path=resolved_path,
                 turn_id=turn["turn_id"],
-                started_at=turn["started_at"],
+                started_at=turn["started_at"] or request_acknowledged_at,
+                output_text=turn["output_text"],
+                raw_output=turn["raw_output"],
                 last_event_at=turn["last_event_at"],
             )
         return TurnObservation(
@@ -337,7 +343,13 @@ class CodexBackend(AgentBackend):
         return " ".join(self._launch_parts(agent))
 
     def _launch_parts(self, agent: dict[str, Any]) -> list[str]:
-        parts = ["codex", "--disable", "tui_app_server", "--no-alt-screen", "--cd", shlex.quote(agent["cwd"])]
+        codex_executable, codex_bin_dir = _resolve_codex_launcher()
+        parts: list[str] = []
+        if codex_bin_dir:
+            parts.extend(["env", f"PATH={shlex.quote(codex_bin_dir)}:$PATH"])
+        parts.extend(
+            [shlex.quote(codex_executable), "--disable", "tui_app_server", "--no-alt-screen", "--cd", shlex.quote(agent["cwd"])]
+        )
         mode = self._effective_mode(agent)
         thinking = agent.get("desired_thinking") or agent.get("thinking") or "xhigh"
         add_dirs: list[str] = []
@@ -383,12 +395,21 @@ class CodexBackend(AgentBackend):
         command = ["new-session", "-d", "-s", session, "-c", cwd, "env"]
         for name in _session_env_unset_names():
             command.extend(["-u", name])
+        for name, value in _session_env_passthrough().items():
+            command.append(f"{name}={value}")
         command.extend([shell, "-l"])
         return command
 
     def _sanitize_tmux_session_environment(self, session: str) -> None:
         for name in _session_env_unset_names():
             self._run_tmux(["set-environment", "-t", session, "-u", name], check=False)
+        desired = _session_env_passthrough()
+        managed_names = {"FLOW_HOME", "CODEX_HOME", "HOME", "PATH", "VIRTUAL_ENV"}
+        for name in managed_names:
+            if name not in desired:
+                self._run_tmux(["set-environment", "-t", session, "-u", name], check=False)
+        for name, value in desired.items():
+            self._run_tmux(["set-environment", "-t", session, name, value], check=False)
 
     def _wait_for_session(self, session: str, timeout_seconds: float = 2.0) -> None:
         deadline = utc_now().timestamp() + timeout_seconds
@@ -401,12 +422,14 @@ class CodexBackend(AgentBackend):
         raise RuntimeError(f"tmux session '{session}' did not stay alive after creation")
 
     def _wait_for_codex_ready(self, session: str, timeout_seconds: float = 120.0) -> None:
-        import time
-
         deadline = utc_now().timestamp() + timeout_seconds
         target = f"{session}:0.0"
         last_trust_confirm_at = 0.0
-        while utc_now().timestamp() < deadline:
+        last_text = ""
+        last_current_command = ""
+        stable_ready_count = 0
+        previous_ready_snapshot = ""
+        while True:
             current = subprocess.run(
                 ["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"],
                 capture_output=True,
@@ -420,28 +443,76 @@ class CodexBackend(AgentBackend):
             if capture.returncode == 0:
                 text = capture.stdout or ""
                 current_command = (current.stdout or "").strip()
+                last_text = text
+                last_current_command = current_command
+                launch_failure = _codex_launch_failure_reason(text, current_command=current_command)
+                if launch_failure:
+                    raise RuntimeError(
+                        f"Codex failed to launch in tmux session '{session}' "
+                        f"({launch_failure}; tail={_pane_tail_summary(text)})"
+                    )
                 if _looks_like_codex_trust_prompt(text, current_command=current_command):
                     now_ts = utc_now().timestamp()
+                    stable_ready_count = 0
+                    previous_ready_snapshot = ""
                     if now_ts - last_trust_confirm_at >= 1.0:
                         self._run_tmux(["send-keys", "-t", target, "Enter"], check=False)
                         last_trust_confirm_at = now_ts
+                    if now_ts >= deadline:
+                        break
                     time.sleep(0.2)
                     continue
-                if _looks_like_codex_tui_ready(text, current_command=current_command):
-                    return
+                if _looks_like_codex_prompt_ready(text, current_command=current_command):
+                    snapshot = "\n".join(line.rstrip() for line in text.splitlines()[-8:])
+                    if snapshot == previous_ready_snapshot:
+                        stable_ready_count += 1
+                    else:
+                        previous_ready_snapshot = snapshot
+                        stable_ready_count = 1
+                    if stable_ready_count >= 2:
+                        return
+                else:
+                    stable_ready_count = 0
+                    previous_ready_snapshot = ""
+            if utc_now().timestamp() >= deadline:
+                break
             time.sleep(0.1)
-        raise RuntimeError(f"Codex did not become ready in tmux session '{session}'")
+        raise RuntimeError(
+            f"Codex did not become ready in tmux session '{session}' "
+            f"(command={last_current_command or 'unknown'}; tail={_pane_tail_summary(last_text)})"
+        )
 
     def _wait_for_prompt_ready(self, session: str, timeout_seconds: float = 15.0) -> None:
         deadline = utc_now().timestamp() + timeout_seconds
         target = f"{session}:0.0"
-        while utc_now().timestamp() < deadline:
+        stable_ready_count = 0
+        previous_ready_snapshot = ""
+        while True:
             text = self._capture_pane_text(target)
             current_command = self._pane_current_command(target)
             if _looks_like_codex_prompt_ready(text, current_command=current_command):
-                return
+                snapshot = "\n".join(line.rstrip() for line in text.splitlines()[-8:])
+                if snapshot == previous_ready_snapshot:
+                    stable_ready_count += 1
+                else:
+                    previous_ready_snapshot = snapshot
+                    stable_ready_count = 1
+                if stable_ready_count >= 2:
+                    return
+            else:
+                stable_ready_count = 0
+                previous_ready_snapshot = ""
+            if utc_now().timestamp() >= deadline:
+                break
             time.sleep(0.1)
         raise RuntimeError(f"Codex prompt input did not become ready in tmux session '{session}'")
+
+    def _clear_prompt_input(self, session: str, timeout_seconds: float = 5.0) -> None:
+        target = f"{session}:0.0"
+        # On Linux/npm Codex, Ctrl-U clears any stale typed prompt content and
+        # restores the built-in placeholder without starting a turn.
+        self._run_tmux(["send-keys", "-t", target, "C-u"], check=False)
+        self._wait_for_prompt_ready(session, timeout_seconds=timeout_seconds)
 
     def _wait_for_paste_settle(self, target: str, baseline: str, timeout_seconds: float = 5.0) -> None:
         deadline = utc_now().timestamp() + timeout_seconds
@@ -469,23 +540,40 @@ class CodexBackend(AgentBackend):
         self._wait_for_paste_settle(target, baseline)
 
     def _submit_prompt(self, target: str) -> None:
-        self._run_tmux(["send-keys", "-t", target, "Enter"])
-        time.sleep(0.2)
-        text = self._capture_pane_text(target)
-        current_command = self._pane_current_command(target)
-        if _looks_like_codex_prompt_ready(text, current_command=current_command):
+        for _attempt in range(5):
             self._run_tmux(["send-keys", "-t", target, "Enter"])
-
-    def _wait_for_thread_rename_confirmation(self, session: str, name: str, timeout_seconds: float = 10.0) -> None:
-        deadline = utc_now().timestamp() + timeout_seconds
-        target = f"{session}:0.0"
-        expected = f"Thread renamed to {name}"
-        while utc_now().timestamp() < deadline:
+            time.sleep(0.25)
             text = self._capture_pane_text(target)
-            if expected in text:
+            current_command = self._pane_current_command(target)
+            if not _looks_like_codex_prompt_ready(text, current_command=current_command):
                 return
+
+    def _wait_for_thread_rename_event(
+        self,
+        agent: dict[str, Any],
+        name: str,
+        *,
+        started_after: datetime,
+        timeout_seconds: float = 10.0,
+    ) -> bool:
+        rollout_path = str(agent.get("rollout_path") or "")
+        thread_id = str(agent.get("thread_id") or "")
+        launch_marker = str(agent.get("launch_marker") or "")
+        resolved_path, resolved_thread_id = self._resolve_rollout(thread_id, rollout_path, launch_marker, "")
+        if not resolved_path:
+            return False
+
+        deadline = utc_now().timestamp() + timeout_seconds
+        while utc_now().timestamp() < deadline:
+            if _thread_name_updated_seen(
+                _read_rollout_events(Path(resolved_path)),
+                expected_name=name,
+                thread_id=resolved_thread_id,
+                started_after=started_after,
+            ):
+                return True
             time.sleep(0.1)
-        raise RuntimeError(f"thread rename was not acknowledged in tmux session '{session}'")
+        return False
 
     def _wait_for_turn_start(
         self,
@@ -493,6 +581,7 @@ class CodexBackend(AgentBackend):
         *,
         started_after: datetime,
         timeout_seconds: float = 10.0,
+        request_id: str = "",
     ) -> TurnObservation:
         deadline = utc_now().timestamp() + timeout_seconds
         thread_id = agent.get("thread_id", "") or ""
@@ -509,9 +598,15 @@ class CodexBackend(AgentBackend):
             if resolved_path:
                 thread_id = resolved_thread_id or thread_id
                 rollout_path = resolved_path
-                turn = _find_turn(events=_read_rollout_events(Path(resolved_path)), current_turn_id="", started_after=started_after)
+                events = _read_rollout_events(Path(resolved_path))
+                turn = _find_turn(
+                    events=events,
+                    current_turn_id="",
+                    current_request_id=request_id,
+                    started_after=started_after,
+                )
                 if turn is not None:
-                    status = "completed" if turn["ended_at"] else "running"
+                    status = "completed" if turn["status"] == "completed" else turn["status"]
                     return TurnObservation(
                         status=status,
                         thread_id=thread_id,
@@ -522,9 +617,28 @@ class CodexBackend(AgentBackend):
                         output_text=turn["output_text"],
                         raw_output=turn["raw_output"],
                         last_event_at=turn["last_event_at"],
+                        abort_reason=turn["abort_reason"],
+                    )
+                request_acknowledged_at = _request_acknowledged_at(
+                    events,
+                    request_id=request_id,
+                    started_after=started_after,
+                )
+                if request_acknowledged_at:
+                    return TurnObservation(
+                        status="running",
+                        thread_id=thread_id,
+                        rollout_path=rollout_path,
+                        started_at=request_acknowledged_at,
+                        last_event_at=request_acknowledged_at,
                     )
             time.sleep(0.1)
-
+        target = f"{agent['tmux_session']}:0.0"
+        text = self._capture_pane_text(target)
+        current_command = self._pane_current_command(target)
+        auth_failure = _codex_prompt_submission_failure_reason(text, current_command=current_command)
+        if auth_failure:
+            raise RuntimeError(auth_failure)
         raise RuntimeError(f"prompt submission was not acknowledged in tmux session '{agent['tmux_session']}'")
 
     def _session_has_live_codex(self, session: str) -> bool:
@@ -536,7 +650,11 @@ class CodexBackend(AgentBackend):
         )
         if current.returncode != 0:
             return False
-        return _is_codex_process_name((current.stdout or "").strip())
+        current_command = (current.stdout or "").strip()
+        if not _is_codex_process_name(current_command):
+            return False
+        text = self._capture_pane_text(target)
+        return _codex_prompt_submission_failure_reason(text, current_command=current_command) is None
 
     def _resolve_rollout(
         self,
@@ -729,44 +847,121 @@ def _read_rollout_events(path: Path) -> list[dict[str, Any]]:
     return events
 
 
+def _thread_name_updated_seen(
+    events: list[dict[str, Any]],
+    *,
+    expected_name: str,
+    thread_id: str,
+    started_after: datetime,
+) -> bool:
+    for event in events:
+        payload = event.get("payload") or {}
+        if event.get("type") != "event_msg" or payload.get("type") != "thread_name_updated":
+            continue
+        timestamp = parse_utc(event.get("timestamp") or "")
+        if timestamp is not None and timestamp < started_after:
+            continue
+        event_thread_id = str(payload.get("thread_id") or "")
+        event_name = str(payload.get("thread_name") or "")
+        if thread_id and event_thread_id and event_thread_id != thread_id:
+            continue
+        if event_name == expected_name:
+            return True
+    return False
+
+
 def _looks_like_codex_trust_prompt(text: str, *, current_command: str = "") -> bool:
-    lower = text.lower()
-    return _is_codex_process_name(current_command) and "do you trust the contents of this directory?" in lower
+    if not _is_codex_process_name(current_command):
+        return False
+    tail_lines = [line.strip().lower() for line in text.splitlines()[-20:] if line.strip()]
+    if not tail_lines:
+        return False
+    tail = "\n".join(tail_lines)
+    has_continue_prompt = any(line == "› 1. yes, continue" or line == "1. yes, continue" for line in tail_lines)
+    return (
+        has_continue_prompt
+        and (
+            "2. no, quit" in tail
+            or "press enter to continue" in tail
+            or "do you trust the contents of this directory?" in tail
+        )
+    )
 
 
 def _find_turn(
     events: list[dict[str, Any]],
     *,
     current_turn_id: str,
+    current_request_id: str,
     started_after: str | datetime,
 ) -> dict[str, str] | None:
     if isinstance(started_after, datetime):
         started_after_dt = started_after
     else:
         started_after_dt = parse_utc(started_after)
+    turns: list[dict[str, str]] = []
     candidate: dict[str, str] | None = None
     bucket: list[dict[str, Any]] = []
+
+    def finalize_bucket() -> None:
+        nonlocal candidate, bucket
+        if not bucket or candidate is None:
+            bucket = []
+            candidate = None
+            return
+
+        assistant_messages: list[str] = []
+        for bucket_event in bucket:
+            payload = bucket_event.get("payload") or {}
+            if not candidate.get("request_id"):
+                request_id = _event_request_id(bucket_event)
+                if request_id:
+                    candidate["request_id"] = request_id
+            if (
+                bucket_event.get("type") == "response_item"
+                and payload.get("type") == "message"
+                and payload.get("role") == "assistant"
+            ):
+                text = _assistant_text(payload)
+                if text:
+                    assistant_messages.append(text)
+                    candidate["raw_output"] = text
+            elif bucket_event.get("type") == "event_msg" and payload.get("type") == "task_complete":
+                candidate["status"] = "completed"
+                candidate["ended_at"] = bucket_event.get("timestamp") or ""
+                last_message = payload.get("last_agent_message")
+                if isinstance(last_message, str) and last_message.strip():
+                    candidate["output_text"] = last_message.strip()
+            elif bucket_event.get("type") == "event_msg" and payload.get("type") == "turn_aborted":
+                candidate["status"] = "aborted"
+                candidate["ended_at"] = bucket_event.get("timestamp") or ""
+                abort_reason = str(payload.get("reason") or "").strip()
+                if abort_reason:
+                    candidate["abort_reason"] = abort_reason
+        if not candidate["output_text"] and assistant_messages:
+            candidate["output_text"] = assistant_messages[-1]
+        turns.append(candidate)
+        bucket = []
+        candidate = None
 
     for event in events:
         payload = event.get("payload") or {}
         if event.get("type") == "event_msg" and payload.get("type") == "task_started":
+            finalize_bucket()
             turn_id = str(payload.get("turn_id") or "")
             if current_turn_id and turn_id != current_turn_id:
-                bucket = []
                 continue
-            timestamp = parse_utc(event.get("timestamp"))
-            if not current_turn_id and started_after_dt is not None and timestamp is not None:
-                if timestamp < started_after_dt:
-                    bucket = []
-                    continue
             bucket = [event]
             candidate = {
                 "turn_id": turn_id,
                 "started_at": event.get("timestamp") or "",
                 "ended_at": "",
+                "status": "running",
                 "output_text": "",
                 "raw_output": "",
                 "last_event_at": event.get("timestamp") or "",
+                "request_id": "",
+                "abort_reason": "",
             }
             continue
         if bucket:
@@ -774,25 +969,28 @@ def _find_turn(
             if candidate is not None:
                 candidate["last_event_at"] = event.get("timestamp") or candidate["last_event_at"]
 
-    if not bucket or candidate is None:
-        return None
+    finalize_bucket()
 
-    assistant_messages: list[str] = []
-    for event in bucket:
-        payload = event.get("payload") or {}
-        if event.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") == "assistant":
-            text = _assistant_text(payload)
-            if text:
-                assistant_messages.append(text)
-                candidate["raw_output"] = text
-        elif event.get("type") == "event_msg" and payload.get("type") == "task_complete":
-            candidate["ended_at"] = event.get("timestamp") or ""
-            last_message = payload.get("last_agent_message")
-            if isinstance(last_message, str) and last_message.strip():
-                candidate["output_text"] = last_message.strip()
-    if not candidate["output_text"] and assistant_messages:
-        candidate["output_text"] = assistant_messages[-1]
-    return candidate
+    if not turns:
+        return None
+    if current_turn_id:
+        return turns[-1]
+    if current_request_id:
+        matching_turns = [turn for turn in turns if turn.get("request_id") == current_request_id]
+        return matching_turns[-1] if matching_turns else None
+    if started_after_dt is None:
+        return turns[-1]
+
+    matching_turns: list[dict[str, str]] = []
+    for turn in turns:
+        turn_started_at = parse_utc(turn["started_at"])
+        turn_last_event_at = parse_utc(turn["last_event_at"])
+        if turn_started_at is not None and turn_started_at >= started_after_dt:
+            matching_turns.append(turn)
+            continue
+        if turn_last_event_at is not None and turn_last_event_at >= started_after_dt:
+            matching_turns.append(turn)
+    return matching_turns[-1] if matching_turns else None
 
 
 def _assistant_text(payload: dict[str, Any]) -> str:
@@ -806,6 +1004,52 @@ def _assistant_text(payload: dict[str, Any]) -> str:
     return "\n".join(part.strip() for part in parts if str(part).strip()).strip()
 
 
+def _request_acknowledged_at(
+    events: list[dict[str, Any]],
+    *,
+    request_id: str,
+    started_after: str | datetime,
+) -> str:
+    if not request_id:
+        return ""
+    if isinstance(started_after, datetime):
+        started_after_dt = started_after
+    else:
+        started_after_dt = parse_utc(started_after)
+    for event in events:
+        timestamp = parse_utc(event.get("timestamp") or "")
+        if started_after_dt is not None and timestamp is not None and timestamp < started_after_dt:
+            continue
+        if _event_request_id(event) == request_id:
+            return event.get("timestamp") or ""
+    return ""
+
+
+def _event_request_id(event: dict[str, Any]) -> str:
+    payload = event.get("payload") or {}
+    event_type = event.get("type")
+    if event_type == "event_msg" and payload.get("type") == "user_message":
+        return _extract_request_id(str(payload.get("message") or ""))
+    if event_type == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+        content = payload.get("content") or []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "input_text":
+                request_id = _extract_request_id(str(item.get("text") or ""))
+                if request_id:
+                    return request_id
+    return ""
+
+
+def _extract_request_id(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("request_id:"):
+            return stripped.split(":", 1)[1].strip()
+    return ""
+
+
 def _session_env_unset_names() -> list[str]:
     names: set[str] = set()
     for key in os.environ:
@@ -815,6 +1059,81 @@ def _session_env_unset_names() -> list[str]:
             names.add(key)
     names.add("__CFBundleIdentifier")
     return sorted(names)
+
+
+def _session_env_passthrough() -> dict[str, str]:
+    names = ("FLOW_HOME", "CODEX_HOME", "HOME", "PATH", "VIRTUAL_ENV")
+    result: dict[str, str] = {}
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            result[name] = value
+    return result
+
+
+def _real_user_home() -> Path | None:
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        return None
+
+
+def _resolve_codex_launcher() -> tuple[str, str]:
+    explicit = shutil.which("codex")
+    if explicit:
+        resolved = Path(explicit).resolve()
+        return str(resolved), str(resolved.parent)
+
+    real_home = _real_user_home()
+    if real_home:
+        version_root = real_home / ".nvm" / "versions" / "node"
+        candidates = sorted(version_root.glob("*/bin"), reverse=True)
+        for candidate in candidates:
+            codex_path = candidate / "codex"
+            node_path = candidate / "node"
+            if codex_path.is_file() and os.access(codex_path, os.X_OK) and node_path.is_file() and os.access(node_path, os.X_OK):
+                return str(codex_path), str(candidate)
+
+    return "codex", ""
+
+
+def _codex_launch_failure_reason(text: str, *, current_command: str = "") -> str | None:
+    command = current_command.strip().lower()
+    if command and command not in {"bash", "sh", "zsh", "fish"}:
+        return None
+
+    normalized_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not normalized_lines:
+        return None
+
+    for line in normalized_lines[-12:]:
+        lowered = line.lower()
+        if "codex" not in lowered:
+            continue
+        if "command not found" in lowered:
+            return line
+        if "no such file or directory" in lowered:
+            return line
+        if "not recognized as an internal or external command" in lowered:
+            return line
+    return None
+
+
+def _codex_prompt_submission_failure_reason(text: str, *, current_command: str = "") -> str | None:
+    if not _is_codex_process_name(current_command):
+        return None
+
+    normalized_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not normalized_lines:
+        return None
+    tail = normalized_lines[-40:]
+    lowered = "\n".join(line.lower() for line in tail)
+
+    if "your access token could not be refreshed" in lowered and "log out and sign in again" in lowered:
+        return "Codex authentication failed; run `codex logout` and `codex login`"
+    if "provided authentication token is expired" in lowered:
+        return "Codex authentication expired; run `codex logout` and `codex login`"
+    return None
 
 
 def _looks_like_codex_tui_ready(text: str, *, current_command: str = "") -> bool:
@@ -839,17 +1158,20 @@ def _looks_like_codex_prompt_ready(text: str, *, current_command: str = "") -> b
     if _looks_like_codex_trust_prompt(text, current_command=current_command):
         return False
 
-    if "OpenAI Codex" in text and any(marker in text for marker in ("model:", "directory:", "gpt-5.4", "gpt-5")):
-        return True
-
-    lines = [line.rstrip() for line in text.splitlines()]
-    tail = [line.strip() for line in lines[-14:] if line.strip()]
-    if not tail:
+    lines = [line.rstrip("\r") for line in text.splitlines()]
+    tail = lines[-24:]
+    nonempty_tail = [line.strip() for line in tail if line.strip()]
+    if not nonempty_tail:
         return False
-    if not any("gpt-" in line.lower() or "model:" in line.lower() for line in tail):
+    if not any("gpt-" in line.lower() or "model:" in line.lower() for line in nonempty_tail):
         return False
 
-    for line in reversed(tail):
+    for raw_line in reversed(tail):
+        line = raw_line.lstrip()
+        if not line.startswith("›"):
+            continue
+        if line == "›":
+            return True
         if not line.startswith("› "):
             continue
         content = line[2:].strip()
@@ -863,20 +1185,22 @@ def _looks_like_codex_prompt_ready(text: str, *, current_command: str = "") -> b
             continue
         return True
     return False
-
-
-def _looks_like_codex_task_in_progress(text: str) -> bool:
-    tail = "\n".join(line.strip() for line in text.splitlines()[-24:] if line.strip())
-    markers = (
-        "Working (",
-        "Running (",
-        "esc to interrupt",
-        "background terminal running",
-        "background terminal",
-        "Ctrl+L is disabled while a task is in progress",
-    )
-    return any(marker in tail for marker in markers)
+def _visible_prompt_content(text: str) -> str | None:
+    lines = [line.rstrip("\r") for line in text.splitlines()]
+    tail = lines[-24:]
+    for raw_line in reversed(tail):
+        line = raw_line.lstrip()
+        if line == "›":
+            return ""
+        if line.startswith("› "):
+            return line[2:]
+    return None
 
 
 def _sanitize_thread_name(name: str) -> str:
     return " ".join(str(name).replace("\x00", "").split())
+
+
+def _pane_tail_summary(text: str, *, lines: int = 6) -> str:
+    tail = [line.strip() for line in text.splitlines()[-lines:] if line.strip()]
+    return " | ".join(tail)

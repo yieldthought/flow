@@ -480,6 +480,7 @@ def test_main_list_migrates_legacy_db_without_daemon_events(tmp_path: Path, monk
             current_turn_id TEXT NOT NULL DEFAULT '',
             current_turn_kind TEXT NOT NULL DEFAULT '',
             current_turn_started_at TEXT NOT NULL DEFAULT '',
+            current_request_id TEXT NOT NULL DEFAULT '',
             last_prompt_sent_at TEXT NOT NULL DEFAULT '',
             status_message TEXT NOT NULL DEFAULT '',
             last_error TEXT NOT NULL DEFAULT '',

@@ -128,6 +128,8 @@ Install the published package:
 python -m pip install flow-like-a-river
 ```
 
+The name `flow` was taken. Can you believe that?
+
 This installs the `flow` CLI command.
 
 Development setup in a fresh virtual environment:

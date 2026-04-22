@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import termios
+import tempfile
 import time
 import tty
 import uuid
@@ -105,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("init")
     subparsers.add_parser("restart")
+    subparsers.add_parser("self-test")
 
     shutdown_parser = subparsers.add_parser("shutdown")
     shutdown_parser.add_argument("tokens", nargs="*")
@@ -143,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_init(conn)
     if args.command == "restart":
         return cmd_restart(conn)
+    if args.command == "self-test":
+        return cmd_self_test(conn)
     if args.command == "start":
         return cmd_start(conn, args.file, args.state, list(args.args))
     if args.command == "interrupt":
@@ -244,25 +248,116 @@ def cmd_restart(conn: Any) -> int:
 
 def cmd_start(conn: Any, path: str, state_token: str | None, extra: list[str]) -> int:
     try:
-        flow = load_flow(path)
+        agent_id, start_state, warnings = _create_agent_from_flow_file(conn, path, state_token, extra)
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    result = validate_flow(flow)
-    for warning in result.warnings:
+    for warning in warnings:
         print(f"warning: {warning}")
-    if result.errors:
-        for error in result.errors:
-            print(f"error: {error}", file=sys.stderr)
+
+    if not ensure_daemon(conn):
+        print("error: failed to start runtime daemon", file=sys.stderr)
         return 1
 
+    print(f"started agent #{agent_id} in state '{start_state}'")
+    return 0
+
+
+_SELF_TEST_FLOW = """
+flow:
+  name: flow-self-test
+  description: Short harmless end-to-end Codex integration check.
+  mode: workspace-write
+  thinking: low
+  fast: false
+
+check:
+  start: true
+  prompt: |
+    This is a flow self-test.
+
+    Do not use any tools. Do not read or write files.
+    Reply with exactly:
+    FLOW_SELF_TEST_OK
+
+    When the runtime later asks for a transition choice, choose `success`.
+  transitions:
+    - if: the exact self-test response was completed and the integration is working
+      go: success
+    - if: anything went wrong
+      go: failure
+
+success:
+  end: true
+
+failure:
+  end: true
+""".strip()
+
+
+def cmd_self_test(conn: Any, *, timeout: float = 120.0) -> int:
+    work_path = Path(tempfile.mkdtemp(prefix="flow-self-test-"))
+    keep_workdir = False
     try:
-        start_state, values, cwd = parse_start_arguments(flow, state_token, extra)
-    except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        flow_path = work_path / "flow-self-test.yaml"
+        flow_path.write_text(_SELF_TEST_FLOW + "\n", encoding="utf-8")
 
+        try:
+            agent_id, start_state, warnings = _create_agent_from_flow_file(
+                conn,
+                str(flow_path),
+                None,
+                ["--path", str(work_path)],
+            )
+        except Exception as exc:
+            print(f"error: failed to create self-test agent: {exc}", file=sys.stderr)
+            return 1
+
+        for warning in warnings:
+            print(f"warning: {warning}")
+
+        if not ensure_daemon(conn):
+            keep_workdir = True
+            print("error: failed to start runtime daemon", file=sys.stderr)
+            print(f"self-test agent #{agent_id} was left in place with workdir {work_path}", file=sys.stderr)
+            return 1
+
+        print(f"flow self-test: started agent #{agent_id} in state '{start_state}'")
+        ok, message, _agent, elapsed = _wait_for_self_test_completion(conn, agent_id, timeout=timeout)
+        if not ok:
+            keep_workdir = True
+            print(f"flow self-test failed after {elapsed:.1f}s: {message}", file=sys.stderr)
+            print(f"self-test agent #{agent_id} was left in place with workdir {work_path}", file=sys.stderr)
+            return 1
+
+        cleanup_error = _delete_self_test_agent(conn, agent_id)
+        if cleanup_error:
+            keep_workdir = True
+            print(
+                f"warning: self-test passed but cleanup failed for agent #{agent_id}: {cleanup_error}; "
+                f"workdir left at {work_path}",
+                file=sys.stderr,
+            )
+        print(f"flow self-test passed in {elapsed:.1f}s")
+        return 0
+    finally:
+        if not keep_workdir:
+            shutil.rmtree(work_path, ignore_errors=True)
+
+
+def _create_agent_from_flow_file(
+    conn: Any,
+    path: str,
+    state_token: str | None,
+    extra: list[str],
+) -> tuple[int, str, tuple[str, ...]]:
+    flow = load_flow(path)
+    result = validate_flow(flow)
+    if result.errors:
+        raise ValueError("; ".join(result.errors))
+
+    start_state, values, cwd = parse_start_arguments(flow, state_token, extra)
     rendered = render_flow(flow, values, cwd_override=cwd)
     snapshot_id = record_flow_snapshot(conn, rendered, to_json(flow_to_dict(rendered)))
     args_json = json.dumps(values, sort_keys=True)
@@ -282,13 +377,55 @@ def cmd_start(conn: Any, path: str, state_token: str | None, extra: list[str]) -
     ensure_scratchpad_dir({"id": agent_id})
     update_agent(conn, agent_id, launch_marker=f"flow-agent-{agent_id}-{uuid.uuid4().hex[:8]}")
     conn.commit()
+    return agent_id, start_state, tuple(result.warnings)
 
-    if not ensure_daemon(conn):
-        print("error: failed to start runtime daemon", file=sys.stderr)
-        return 1
 
-    print(f"started agent #{agent_id} in state '{start_state}'")
-    return 0
+def _wait_for_self_test_completion(
+    conn: Any,
+    agent_id: int,
+    *,
+    timeout: float,
+) -> tuple[bool, str, dict[str, Any] | None, float]:
+    started = time.monotonic()
+    deadline = started + timeout
+    last_agent: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        row = get_agent(conn, agent_id)
+        if row is None:
+            return False, "agent disappeared before completing", None, time.monotonic() - started
+        agent = dict(row)
+        last_agent = agent
+        if agent.get("substate") == "needs_help":
+            detail = str(agent.get("last_error") or agent.get("status_message") or "agent needs help")
+            return False, detail, agent, time.monotonic() - started
+        if agent.get("ended_at"):
+            if agent.get("current_state") == "success" and agent.get("phase") == "finished":
+                return True, "success", agent, time.monotonic() - started
+            state = str(agent.get("current_state") or "?")
+            status = str(agent.get("status_message") or "").strip()
+            detail = f"agent ended in state '{state}'"
+            if status:
+                detail += f": {status}"
+            return False, detail, agent, time.monotonic() - started
+        time.sleep(0.5)
+
+    detail = "timed out waiting for success"
+    if last_agent is not None:
+        detail += (
+            f" (state={last_agent.get('current_state')}, phase={last_agent.get('phase')}, "
+            f"substate={last_agent.get('substate')})"
+        )
+    return False, detail, last_agent, time.monotonic() - started
+
+
+def _delete_self_test_agent(conn: Any, agent_id: int) -> str:
+    try:
+        result = cmd_delete(conn, agent_id)
+    except Exception as exc:
+        return str(exc)
+    if result != 0:
+        return f"delete command exited with status {result}"
+    return ""
 
 
 def cmd_queue_and_wait(conn: Any, agent_id: int, kind: str, payload: dict[str, Any]) -> int:

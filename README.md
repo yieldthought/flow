@@ -355,6 +355,12 @@ flow wake <agent-id>
 
 ## CLI overview
 
+Check that the installed flow/Codex/tmux integration can run a tiny end-to-end agent flow using your current user environment:
+
+```bash
+flow self-test
+```
+
 Validate one or more flow files:
 
 ```bash

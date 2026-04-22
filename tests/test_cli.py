@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ import yaml
 
 from flow.ansi import PALETTE
 from flow import __version__
-from flow.cli import cmd_catalog, cmd_list, cmd_restart, cmd_show, cmd_top, cmd_validate, cmd_view, main, run_top_mode
+from flow.cli import cmd_catalog, cmd_list, cmd_restart, cmd_self_test, cmd_show, cmd_top, cmd_validate, cmd_view, main, run_top_mode
 from flow.common import format_utc, utc_now
 from flow.render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
 from flow.store import (
@@ -443,6 +444,91 @@ def test_main_version_prints_and_exits(capsys: object) -> None:
 
     assert exc.value.code == 0
     assert capsys.readouterr().out.strip() == f"flow {__version__}"
+
+
+def test_main_self_test_subcommand_runs(tmp_path: Path, monkeypatch: object) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    called: dict[str, bool] = {}
+
+    def fake_self_test(conn: object) -> int:
+        called["self_test"] = True
+        assert conn is not None
+        return 0
+
+    monkeypatch.setattr("flow.cli.cmd_self_test", fake_self_test)
+
+    assert main(["self-test"]) == 0
+    assert called == {"self_test": True}
+
+
+def test_cmd_self_test_uses_current_environment_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch: object,
+    capsys: object,
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", "/tmp/user-codex-home")
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("flow.cli.ensure_daemon", lambda _conn: True)
+
+    def fake_wait(conn_arg: object, agent_id: int, *, timeout: float) -> tuple[bool, str, dict[str, object] | None, float]:
+        del timeout
+        agent = dict(get_agent(conn_arg, agent_id))
+        seen["created"] = agent
+        now = format_utc(utc_now())
+        update_agent(conn_arg, agent_id, current_state="success", phase="finished", ended_at=now, status_message="self-test ok")
+        return True, "success", dict(get_agent(conn_arg, agent_id)), 0.1
+
+    def fake_delete(conn_arg: object, agent_id: int) -> str:
+        seen["deleted"] = agent_id
+        assert get_agent(conn_arg, agent_id) is not None
+        return ""
+
+    monkeypatch.setattr("flow.cli._wait_for_self_test_completion", fake_wait)
+    monkeypatch.setattr("flow.cli._delete_self_test_agent", fake_delete)
+
+    assert cmd_self_test(conn) == 0
+
+    created = seen["created"]
+    assert isinstance(created, dict)
+    assert created["flow_name"] == "flow-self-test"
+    assert created["current_state"] == "check"
+    assert created["mode"] == "workspace-write"
+    assert created["thinking"] == "low"
+    assert created["fast"] == 0
+    assert seen["deleted"] == created["id"]
+    assert Path(str(created["cwd"])).name.startswith("flow-self-test-")
+    assert "flow self-test passed" in capsys.readouterr().out
+    assert os.environ["CODEX_HOME"] == "/tmp/user-codex-home"
+
+
+def test_cmd_self_test_leaves_failed_agent_for_inspection(
+    tmp_path: Path,
+    monkeypatch: object,
+    capsys: object,
+) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    monkeypatch.setattr("flow.cli.ensure_daemon", lambda _conn: True)
+
+    def fake_wait(conn_arg: object, agent_id: int, *, timeout: float) -> tuple[bool, str, dict[str, object] | None, float]:
+        del timeout
+        agent = dict(get_agent(conn_arg, agent_id))
+        return False, "Codex authentication failed", agent, 0.2
+
+    def fail_delete(_conn: object, _agent_id: int) -> str:
+        pytest.fail("failed self-test agent should be left for inspection")
+
+    monkeypatch.setattr("flow.cli._wait_for_self_test_completion", fake_wait)
+    monkeypatch.setattr("flow.cli._delete_self_test_agent", fail_delete)
+
+    assert cmd_self_test(conn) == 1
+
+    captured = capsys.readouterr()
+    assert "flow self-test failed" in captured.err
+    assert "left in place with workdir" in captured.err
 
 
 def test_main_list_migrates_legacy_db_without_daemon_events(tmp_path: Path, monkeypatch: object, capsys: object) -> None:

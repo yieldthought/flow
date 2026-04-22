@@ -114,6 +114,15 @@ The main idea is simple:
 - Codex uses your normal shared `~/.codex` home, so your usual config, auth, and skills still apply.
 - Waiting, pausing, interruption, and recovery are first-class runtime concepts.
 
+## Agent Skills
+
+This repository includes local Codex skills in `.agents/skills/`. They are guidance for agents working with this repo, not runtime configuration.
+
+- `flows-compose` describes the standard pattern for delegating work to child flows with `flow start` and `wait-for-child`.
+- `flow-dev` records the repo-specific development commands, test environment, and release steps.
+
+When you maintain flow definitions, prefer putting reusable operating patterns in skills and documentation instead of repeating long mechanical instructions in every YAML prompt. For agents running in another workspace, make sure the relevant skill is available in that workspace or in the user's global Codex skills.
+
 ## Requirements
 
 - Python 3.10+
@@ -256,12 +265,18 @@ Flows can launch other flows without any YAML composition syntax.
 The intended pattern is:
 
 1. Run `flow catalog` to discover an existing flow that matches the long-running subtask.
-2. Run `flow start ...` from the agent turn and capture the child agent id.
-3. When the runtime asks for a transition or terminal action, return `wait-for-child` with one or more child ids in `child_ids`.
-4. The parent parks in `waiting_children` and wakes in the same state once every named child reaches an end state or is stopped.
-5. On wake, the parent gets a fresh turn with the child outcomes and scratchpad paths available before it chooses its next transition.
+2. Check your scratchpad or current agent status for an already-active child doing the same work, and avoid starting duplicates.
+3. Run `flow start ...` from the agent turn and capture the child agent id.
+4. Record the child id, flow name, purpose, and key args in the parent scratchpad.
+5. When the runtime asks for a transition or terminal action and the parent needs the result before continuing, return `wait-for-child` with one or more child ids in `child_ids`.
+6. The parent parks in `waiting_children` and wakes in the same state once every named child reaches an end state, is stopped, or becomes unknown.
+7. On wake, inspect the child end state and scratchpad path, copy durable facts into the parent scratchpad, and then choose the next transition.
 
 The runtime does not add hierarchy-specific YAML or special child-agent semantics beyond that. Children are still ordinary agents you can inspect, pause, move, stop, or delete with the normal CLI.
+
+Children do not automatically belong to a state or flow. You can start a child in one state and wait for it in a later state, but only if the parent preserves the child id and later supplies it in `child_ids`. The wait is local to the state where `wait-for-child` is chosen: the parent parks and wakes in that same current state.
+
+Codex agents in this repository can also use the local `flows-compose` skill in `.agents/skills/flows-compose/SKILL.md`, which captures this delegation pattern so it does not need to be spelled out in every flow prompt.
 
 Example:
 

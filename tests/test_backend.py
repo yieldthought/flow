@@ -26,7 +26,7 @@ from flow.backend import (
 )
 
 
-def test_session_env_unset_names_preserves_codex_home(monkeypatch: object) -> None:
+def test_session_env_unset_names_clears_codex_environment(monkeypatch: object) -> None:
     monkeypatch.setenv("CODEX_HOME", "/tmp/shared-codex-home")
     monkeypatch.setenv("CODEX_THREAD_ID", "thread-123")
     monkeypatch.setenv("CODEX_CI", "1")
@@ -36,11 +36,13 @@ def test_session_env_unset_names_preserves_codex_home(monkeypatch: object) -> No
 
     names = _session_env_unset_names()
 
-    assert "CODEX_HOME" not in names
+    assert "CODEX_HOME" in names
     assert "CODEX_THREAD_ID" in names
     assert "CODEX_CI" in names
     assert "CHATGPT_DESKTOP_THREAD_ID" in names
     assert "__CFBundleIdentifier" in names
+    assert "FLOW_HOME" in names
+    assert "VIRTUAL_ENV" in names
 
 
 def test_session_env_passthrough_includes_runtime_specific_homes(monkeypatch: object) -> None:
@@ -81,6 +83,7 @@ def test_launch_command_can_enable_fast_mode() -> None:
 
 def test_launch_command_uses_resolved_codex_launcher(monkeypatch: object) -> None:
     backend = CodexBackend()
+    monkeypatch.setenv("PATH", "/tmp/bin:/usr/bin")
     monkeypatch.setattr(
         "flow.backend._resolve_codex_launcher",
         lambda: ("/home/moconnor/.nvm/versions/node/v20.20.0/bin/codex", "/home/moconnor/.nvm/versions/node/v20.20.0/bin"),
@@ -88,9 +91,10 @@ def test_launch_command_uses_resolved_codex_launcher(monkeypatch: object) -> Non
 
     command = backend._launch_command({"cwd": "/tmp/work", "mode": "yolo", "thinking": "xhigh"})
 
-    assert command.startswith(
-        "env PATH=/home/moconnor/.nvm/versions/node/v20.20.0/bin:$PATH /home/moconnor/.nvm/versions/node/v20.20.0/bin/codex"
-    )
+    assert command.startswith("env ")
+    assert "-u CODEX_HOME" in command
+    assert "PATH=/home/moconnor/.nvm/versions/node/v20.20.0/bin:$PATH" in command
+    assert "/home/moconnor/.nvm/versions/node/v20.20.0/bin/codex" in command
 
 
 def test_resolve_codex_launcher_falls_back_to_real_home_nvm(monkeypatch: object, tmp_path: Path) -> None:
@@ -124,6 +128,45 @@ def test_new_session_command_carries_runtime_specific_env(monkeypatch: object) -
     assert "CODEX_HOME=/tmp/codex-home" in command
     assert "HOME=/tmp/home" in command
     assert "PATH=/tmp/bin:/usr/bin" in command
+
+
+def test_new_session_command_clears_stale_tmux_env_when_not_passthrough(monkeypatch: object) -> None:
+    monkeypatch.delenv("FLOW_HOME", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setenv("HOME", "/tmp/home")
+    monkeypatch.setenv("PATH", "/tmp/bin:/usr/bin")
+    backend = CodexBackend()
+
+    command = backend._new_session_command("flow-agent-1", "/tmp/work", "/bin/bash")
+
+    assert "-u" in command
+    assert "FLOW_HOME" in command
+    assert "CODEX_HOME" in command
+    assert "VIRTUAL_ENV" in command
+    assert not any(item.startswith("FLOW_HOME=") for item in command)
+    assert not any(item.startswith("CODEX_HOME=") for item in command)
+    assert not any(item.startswith("VIRTUAL_ENV=") for item in command)
+
+
+def test_launch_command_clears_stale_shell_env_before_running_codex(monkeypatch: object) -> None:
+    monkeypatch.delenv("FLOW_HOME", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setenv("HOME", "/tmp/home")
+    monkeypatch.setenv("PATH", "/tmp/bin:/usr/bin")
+    backend = CodexBackend()
+
+    command = backend._launch_command({"cwd": "/tmp/work", "mode": "yolo", "thinking": "xhigh"})
+
+    assert "-u FLOW_HOME" in command
+    assert "-u CODEX_HOME" in command
+    assert "-u VIRTUAL_ENV" in command
+    assert "HOME=/tmp/home" in command
+    assert "PATH=/tmp/bin:/usr/bin" not in command
+    assert "FLOW_HOME=" not in command
+    assert "CODEX_HOME=" not in command
+    assert "VIRTUAL_ENV=" not in command
 
 
 def test_workspace_write_launch_command_adds_scratchpad_dir(tmp_path: Path, monkeypatch: object) -> None:

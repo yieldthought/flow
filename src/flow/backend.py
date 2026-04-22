@@ -344,9 +344,13 @@ class CodexBackend(AgentBackend):
 
     def _launch_parts(self, agent: dict[str, Any]) -> list[str]:
         codex_executable, codex_bin_dir = _resolve_codex_launcher()
-        parts: list[str] = []
+        parts: list[str] = ["env"]
+        for name in _session_env_unset_names():
+            parts.extend(["-u", shlex.quote(name)])
+        for name, value in _codex_launch_env_passthrough().items():
+            parts.append(f"{shlex.quote(name)}={shlex.quote(value)}")
         if codex_bin_dir:
-            parts.extend(["env", f"PATH={shlex.quote(codex_bin_dir)}:$PATH"])
+            parts.append(f"PATH={shlex.quote(codex_bin_dir)}:$PATH")
         parts.extend(
             [shlex.quote(codex_executable), "--disable", "tui_app_server", "--no-alt-screen", "--cd", shlex.quote(agent["cwd"])]
         )
@@ -1056,14 +1060,28 @@ def _extract_request_id(text: str) -> str:
     return ""
 
 
+_ALWAYS_UNSET_SESSION_ENV = {
+    "CHATGPT_DESKTOP_THREAD_ID",
+    "CODEX_CI",
+    "CODEX_HOME",
+    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+    "CODEX_SANDBOX",
+    "CODEX_SHELL",
+    "CODEX_THREAD_ID",
+    "FLOW_HOME",
+    "VIRTUAL_ENV",
+    "__CFBundleIdentifier",
+}
+
+
 def _session_env_unset_names() -> list[str]:
     names: set[str] = set()
     for key in os.environ:
         if key.startswith("CHATGPT_"):
             names.add(key)
-        elif key.startswith("CODEX_") and key != "CODEX_HOME":
+        elif key.startswith("CODEX_"):
             names.add(key)
-    names.add("__CFBundleIdentifier")
+    names.update(_ALWAYS_UNSET_SESSION_ENV)
     return sorted(names)
 
 
@@ -1075,6 +1093,12 @@ def _session_env_passthrough() -> dict[str, str]:
         if value:
             result[name] = value
     return result
+
+
+def _codex_launch_env_passthrough() -> dict[str, str]:
+    values = _session_env_passthrough()
+    values.pop("PATH", None)
+    return values
 
 
 def _real_user_home() -> Path | None:

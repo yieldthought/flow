@@ -281,6 +281,9 @@ class CodexBackend(AgentBackend):
         )
         if turn is None:
             if request_acknowledged_at:
+                permission_prompt = self._permission_prompt_reason(agent)
+                if permission_prompt:
+                    raise RuntimeError(permission_prompt)
                 return TurnObservation(
                     status="running",
                     thread_id=resolved_thread_id,
@@ -303,6 +306,9 @@ class CodexBackend(AgentBackend):
                 abort_reason=turn["abort_reason"],
             )
         if turn["status"] != "completed":
+            permission_prompt = self._permission_prompt_reason(agent)
+            if permission_prompt:
+                raise RuntimeError(permission_prompt)
             return TurnObservation(
                 status="running",
                 thread_id=resolved_thread_id,
@@ -649,6 +655,9 @@ class CodexBackend(AgentBackend):
         auth_failure = _codex_prompt_submission_failure_reason(text, current_command=current_command)
         if auth_failure:
             raise RuntimeError(auth_failure)
+        permission_prompt = _codex_permission_prompt_reason(text, current_command=current_command)
+        if permission_prompt:
+            raise RuntimeError(permission_prompt)
         raise RuntimeError(f"prompt submission was not acknowledged in tmux session '{agent['tmux_session']}'")
 
     def _session_has_live_codex(self, session: str) -> bool:
@@ -665,6 +674,18 @@ class CodexBackend(AgentBackend):
             return False
         text = self._capture_pane_text(target)
         return _codex_prompt_submission_failure_reason(text, current_command=current_command) is None
+
+    def _permission_prompt_reason(self, agent: dict[str, Any]) -> str | None:
+        session = str(agent.get("tmux_session") or "").strip()
+        if not session:
+            return None
+        target = f"{session}:0.0"
+        try:
+            text = self._capture_pane_text(target)
+            current_command = self._pane_current_command(target)
+        except RuntimeError:
+            return None
+        return _codex_permission_prompt_reason(text, current_command=current_command)
 
     def _resolve_rollout(
         self,
@@ -1187,6 +1208,8 @@ def _looks_like_codex_prompt_ready(text: str, *, current_command: str = "") -> b
         return False
     if _looks_like_codex_trust_prompt(text, current_command=current_command):
         return False
+    if _codex_permission_prompt_reason(text, current_command=current_command):
+        return False
 
     lines = [line.rstrip("\r") for line in text.splitlines()]
     tail = lines[-24:]
@@ -1215,6 +1238,50 @@ def _looks_like_codex_prompt_ready(text: str, *, current_command: str = "") -> b
             continue
         return True
     return False
+
+
+def _codex_permission_prompt_reason(text: str, *, current_command: str = "") -> str | None:
+    if not _is_codex_process_name(current_command):
+        return None
+
+    tail_lines = [line.strip() for line in text.splitlines()[-32:] if line.strip()]
+    if not tail_lines:
+        return None
+
+    last_prompt_index = -1
+    for index, line in enumerate(tail_lines):
+        if line.startswith("›"):
+            last_prompt_index = index
+
+    if last_prompt_index >= 0:
+        content = tail_lines[last_prompt_index].lstrip("›").strip().lower()
+        if content and not _looks_like_codex_menu_choice(content):
+            return None
+        tail_lines = tail_lines[max(0, last_prompt_index - 12) :]
+
+    tail = "\n".join(line.lower() for line in tail_lines)
+    if not any(
+        marker in tail
+        for marker in (
+            "needs your approval",
+            "do you want to approve network access",
+            "tool call needs your approval",
+            "allow codex to run",
+            "requires approval by policy",
+            "requires approval:",
+        )
+    ):
+        return None
+    return "Codex is waiting for permissions approval"
+
+
+def _looks_like_codex_menu_choice(content: str) -> bool:
+    lowered = content.strip().lower()
+    if not lowered:
+        return True
+    if lowered[0].isdigit():
+        return True
+    return lowered.startswith(("yes", "no", "allow", "approve", "deny", "cancel", "go back"))
 
 
 def _visible_prompt_content(text: str) -> str | None:

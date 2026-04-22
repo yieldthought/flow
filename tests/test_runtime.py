@@ -1172,6 +1172,52 @@ done:
     assert events[-1]["reason"] == "prompt submission was not acknowledged"
 
 
+def test_runtime_moves_running_turn_permission_prompt_to_needs_help(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+
+    class PermissionPromptBackend(FakeBackend):
+        def poll_turn(self, agent: dict[str, Any]) -> TurnObservation:
+            del agent
+            raise RuntimeError("Codex is waiting for permissions approval")
+
+    runtime = Runtime(backend=PermissionPromptBackend())
+    runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["phase"] == "working"
+
+    runtime.tick(conn)
+
+    agent = dict(get_agent(conn, agent_id))
+    events = [dict(row) for row in list_agent_events(conn, agent_id)]
+    assert agent["substate"] == "needs_help"
+    assert agent["phase"] == "paused"
+    assert agent["last_error"] == "Codex is waiting for permissions approval"
+    assert agent["status_message"] == "Needs help"
+    assert events[-1]["kind"] == "needs_help"
+    assert events[-1]["reason"] == "Codex is waiting for permissions approval"
+
+
 def test_runtime_tick_survives_codex_auth_submission_error(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     conn = connect()

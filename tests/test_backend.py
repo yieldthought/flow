@@ -12,6 +12,7 @@ from flow.backend import (
     TurnObservation,
     _attach_env,
     _codex_launch_failure_reason,
+    _codex_permission_prompt_reason,
     _find_turn,
     _format_agent_args,
     _is_codex_process_name,
@@ -333,6 +334,23 @@ def test_codex_prompt_ready_probe_rejects_trust_prompt() -> None:
 """.strip(),
         current_command="codex-aarch64-a",
     )
+
+
+def test_codex_prompt_ready_probe_rejects_permission_approval_prompt() -> None:
+    text = """
+• Ran pytest
+
+  pytest -q needs your approval.
+
+› 1. Yes, and don't ask again for commands that start with `pytest -q`
+  2. Yes, run command
+  3. No, tell Codex what to do differently
+
+  gpt-5.4 xhigh · /tmp/agent-flows
+""".strip()
+
+    assert _codex_permission_prompt_reason(text, current_command="codex-aarch64-a")
+    assert not _looks_like_codex_prompt_ready(text, current_command="codex-aarch64-a")
 
 
 def test_codex_prompt_ready_probe_rejects_previous_thread_name_hint() -> None:
@@ -956,6 +974,46 @@ already used. Please log out and sign in again.
             started_after=parse_utc("2026-04-18T08:16:37.654321Z"),
             timeout_seconds=0.0,
             request_id="req-123",
+        )
+
+
+def test_poll_turn_reports_permission_approval_prompt_from_pane(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    events = [
+        {
+            "timestamp": "2026-04-18T08:16:37.800Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "turn-1"},
+        }
+    ]
+    pane_text = """
+• Running command
+
+  python -m pytest tests/test_backend.py needs your approval.
+
+› 1. Yes, and don't ask again for commands that start with `python -m pytest`
+  2. Yes, run command
+  3. No, tell Codex what to do differently
+
+  gpt-5.4 xhigh fast · /tmp/agent-flows
+""".strip()
+
+    monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("/tmp/fake.jsonl", "thread-9"))
+    monkeypatch.setattr("flow.backend._read_rollout_events", lambda path: events)
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: pane_text)
+    monkeypatch.setattr(backend, "_pane_current_command", lambda target: "codex-aarch64-a")
+
+    with pytest.raises(RuntimeError, match="Codex is waiting for permissions approval"):
+        backend.poll_turn(
+            {
+                "tmux_session": "flow-agent-9",
+                "thread_id": "thread-9",
+                "rollout_path": "/tmp/fake.jsonl",
+                "launch_marker": "",
+                "current_turn_started_at": "2026-04-18T08:16:37.654321Z",
+                "current_turn_id": "turn-1",
+                "current_request_id": "req-123",
+            }
         )
 
 

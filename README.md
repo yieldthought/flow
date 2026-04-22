@@ -461,9 +461,15 @@ Move or stop an agent:
 
 ```bash
 flow move 12 investigate
+flow resume 12
 flow stop 12
 flow stop 12 done
 ```
+
+- `flow move`: move the agent to another state and leave it paused; run
+  `flow resume` when you want the target state to start
+- `flow stop`: stop the agent immediately, optionally marking it as a specific
+  terminal state
 
 Delete an archived agent entirely:
 
@@ -554,6 +560,7 @@ flow interrupt 1
 flow resume 1
 flow wake 1
 flow move 1 investigate-failure
+flow resume 1
 ```
 
 Restart the runtime after code changes:

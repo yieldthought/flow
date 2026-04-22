@@ -544,6 +544,12 @@ done:
     runtime.tick(conn)
     agent = dict(get_agent(conn, agent_id))
     assert agent["current_state"] == "second"
+    assert agent["substate"] == "interaction"
+    assert agent["phase"] == "paused"
+    assert backend.prompts.get(agent_id, []) == []
+
+    runtime.tick(conn)
+    assert backend.prompts.get(agent_id, []) == []
 
     enqueue_command(conn, agent_id, "stop", {})
     conn.commit()
@@ -560,6 +566,67 @@ done:
     assert events[1]["reason"] == "Interrupted by alice"
     assert events[2]["reason"] == "Moved to second by alice"
     assert events[3]["reason"] == "Stopped by alice"
+
+
+def test_runtime_move_from_needs_help_pauses_until_resume(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    monkeypatch.setattr("flow.runtime.current_actor", lambda: "alice")
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+first:
+  start: true
+  prompt: one
+  transitions:
+    - go: second
+
+second:
+  prompt: two
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+    backend = FakeBackend()
+    backend.set_script(agent_id, ["worked", '{"choice":"needs-help","reason":"blocked"}'])
+    runtime = Runtime(backend=backend)
+
+    for _ in range(4):
+        runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["current_state"] == "first"
+    assert agent["substate"] == "needs_help"
+
+    enqueue_command(conn, agent_id, "move", {"state": "second"})
+    conn.commit()
+    runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["current_state"] == "second"
+    assert agent["substate"] == "interaction"
+    assert agent["phase"] == "paused"
+    assert len(backend.prompts[agent_id]) == 2
+
+    runtime.tick(conn)
+    assert len(backend.prompts[agent_id]) == 2
+
+    enqueue_command(conn, agent_id, "resume", {})
+    conn.commit()
+    runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["substate"] == "normal"
+    assert agent["phase"] == "working"
+    assert len(backend.prompts[agent_id]) == 3
+    assert "State: second" in backend.prompts[agent_id][2]
 
 
 def test_runtime_pause_does_not_interrupt_running_turn(tmp_path: Path, monkeypatch: Any) -> None:

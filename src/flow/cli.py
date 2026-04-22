@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     stop_parser.add_argument("agent_id")
     stop_parser.add_argument("state", nargs="?")
 
-    move_parser = subparsers.add_parser("move")
+    move_parser = subparsers.add_parser("move", help="move an agent to a state and leave it paused until resume")
     move_parser.add_argument("agent_id")
     move_parser.add_argument("state")
 

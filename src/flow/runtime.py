@@ -343,7 +343,6 @@ class Runtime:
             update_agent(
                 conn,
                 agent_id,
-                substate="normal",
                 current_turn_id="",
                 current_turn_kind="",
                 current_turn_started_at="",
@@ -360,7 +359,7 @@ class Runtime:
                 reason=reason,
                 payload=command_payload,
             )
-            self._move_to_state(conn, agent, flow, target, reason)
+            self._move_to_state(conn, agent, flow, target, reason, pause=True)
             return
         if kind == "stop":
             target = str(payload.get("state") or "stopped")
@@ -810,13 +809,14 @@ class Runtime:
         reason: str,
         *,
         transition: TransitionSpec | None = None,
+        pause: bool = False,
     ) -> None:
         now_dt = utc_now()
         now = format_utc(now_dt)
         close_open_state_run(conn, int(agent["id"]), ended_at=now)
         next_state = flow.states[state_name]
         wait_text = transition.wait if transition is not None and transition.wait is not None else next_state.wait
-        if next_state.end and not next_state.prompt and not wait_text:
+        if next_state.end and not next_state.prompt and not wait_text and not pause:
             update_agent(
                 conn,
                 int(agent["id"]),
@@ -835,24 +835,25 @@ class Runtime:
             self.backend.terminate(agent, immediate=False)
             return
         ready_at = ""
-        phase = "enter_state"
-        if wait_text:
+        phase = "paused" if pause else "enter_state"
+        if wait_text and not pause:
             ready_at = format_utc(now_dt + timedelta(seconds=parse_wait_seconds(wait_text)))
             phase = "waiting"
-        update_agent(
-            conn,
-            int(agent["id"]),
-            current_state=state_name,
-            state_entered_at=now,
-            ready_at=ready_at,
-            phase=phase,
-            status_message=reason if not ready_at else f"Waiting until {ready_at}",
-            pending_state_json="",
-            current_turn_id="",
-            current_turn_kind="",
-            current_turn_started_at="",
-            current_request_id="",
-        )
+        updates = {
+            "current_state": state_name,
+            "state_entered_at": now,
+            "ready_at": ready_at,
+            "phase": phase,
+            "status_message": f"{reason}; paused until resume" if pause else (reason if not ready_at else f"Waiting until {ready_at}"),
+            "pending_state_json": "",
+            "current_turn_id": "",
+            "current_turn_kind": "",
+            "current_turn_started_at": "",
+            "current_request_id": "",
+        }
+        if pause:
+            updates["substate"] = "interaction"
+        update_agent(conn, int(agent["id"]), **updates)
         if ready_at:
             record_agent_event(
                 conn,
@@ -862,7 +863,7 @@ class Runtime:
                 reason=f"Waiting for {wait_text}",
                 payload={"wait": wait_text, "ready_at": ready_at},
             )
-        if not ready_at:
+        if not ready_at and not pause:
             open_state_run(conn, int(agent["id"]), state_name, started_at=now)
 
     def _transition_terminal(self, conn: Any, agent: dict[str, Any], state_name: str, *, choice: str, reason: str) -> None:

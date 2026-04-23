@@ -12,7 +12,19 @@ import yaml
 
 from flow.ansi import PALETTE
 from flow import __version__
-from flow.cli import cmd_catalog, cmd_list, cmd_restart, cmd_self_test, cmd_show, cmd_top, cmd_validate, cmd_view, main, run_top_mode
+from flow.cli import (
+    _draw_top_frame,
+    cmd_catalog,
+    cmd_list,
+    cmd_restart,
+    cmd_self_test,
+    cmd_show,
+    cmd_top,
+    cmd_validate,
+    cmd_view,
+    main,
+    run_top_mode,
+)
 from flow.common import format_utc, utc_now
 from flow.render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
 from flow.store import (
@@ -1082,6 +1094,33 @@ def test_run_top_mode_requires_tty(monkeypatch: object, capsys: object) -> None:
     assert "--top requires an interactive terminal" in capsys.readouterr().err
 
 
+def test_draw_top_frame_passes_terminal_width(monkeypatch: object) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeOutput:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def write(self, value: str) -> None:
+            self.text += value
+
+        def flush(self) -> None:
+            pass
+
+    def fitter(text: str, height: int, width: int) -> str:
+        seen.update({"text": text, "height": height, "width": width})
+        return "fitted"
+
+    fake_output = FakeOutput()
+    monkeypatch.setattr("flow.cli.sys.stdout", fake_output)
+    monkeypatch.setattr("flow.cli.shutil.get_terminal_size", lambda fallback: os.terminal_size((12, 4)))
+
+    _draw_top_frame(lambda: "raw", fitter)
+
+    assert seen == {"text": "raw", "height": 4, "width": 12}
+    assert fake_output.text == "\x1b[2J\x1b[Hfitted"
+
+
 def test_render_list_groups_agents(tmp_path: Path, monkeypatch: object) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     conn = connect()
@@ -1250,6 +1289,13 @@ def test_fit_list_top_truncates_with_summary() -> None:
     assert "2 more lines" in lines[2]
 
 
+def test_fit_list_top_counts_wrapped_rows() -> None:
+    text = "\n".join(["x" * 25, "next", "last"])
+    fitted = fit_list_top(text, 3, width=20)
+
+    assert fitted.splitlines() == ["x" * 25, "... 2 more lines"]
+
+
 def test_fit_top_dashboard_preserves_recent_event_tail() -> None:
     text = "\n".join(
         [
@@ -1282,6 +1328,28 @@ def test_fit_top_dashboard_preserves_recent_event_tail() -> None:
         "event 5",
         "event 6",
         "event 7",
+    ]
+
+
+def test_fit_top_dashboard_counts_wrapped_rows() -> None:
+    text = "\n".join(
+        [
+            "summary 1234567890",
+            "summary 2",
+            "",
+            "Recent Events",
+            "event 1 abcdefghij",
+            "event 2",
+            "event 3",
+        ]
+    )
+    fitted = fit_top_dashboard(text, 5, width=10)
+
+    assert fitted.splitlines() == [
+        "Recent Events",
+        "event 1...",
+        "event 2",
+        "event 3",
     ]
 
 
@@ -1716,6 +1784,23 @@ def test_fit_show_top_pins_header_and_keeps_latest_events() -> None:
     )
     fitted = fit_show_top(text, 6)
     assert fitted.splitlines() == ["header", "state", "", "Events", "event 2", "event 3"]
+
+
+def test_fit_show_top_counts_wrapped_rows() -> None:
+    text = "\n".join(
+        [
+            "header",
+            "state",
+            "",
+            "Events",
+            "old event abcdefghij",
+            "event 2",
+            "event 3",
+        ]
+    )
+    fitted = fit_show_top(text, 7, width=10)
+
+    assert fitted.splitlines() == ["header", "state", "", "Events", "old eve...", "event 2", "event 3"]
 
 
 def test_render_show_pads_single_digit_days_when_mixed(tmp_path: Path, monkeypatch: object) -> None:

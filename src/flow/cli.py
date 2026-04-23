@@ -850,7 +850,7 @@ def _json_args(text: str) -> dict[str, Any]:
 def run_top_mode(
     render_once: Callable[[], str],
     *,
-    fitter: Callable[[str, int], str],
+    fitter: Callable[[str, int, int], str],
     on_exit: Callable[[], None] | None = None,
     refresh_seconds: float = 5.0,
 ) -> int:
@@ -886,9 +886,9 @@ def run_top_mode(
     return 0
 
 
-def _draw_top_frame(render_once: Callable[[], str], fitter: Callable[[str, int], str]) -> None:
-    height = shutil.get_terminal_size(fallback=(80, 24)).lines
-    frame = fitter(render_once(), height)
+def _draw_top_frame(render_once: Callable[[], str], fitter: Callable[[str, int, int], str]) -> None:
+    size = shutil.get_terminal_size(fallback=(80, 24))
+    frame = fitter(render_once(), size.lines, size.columns)
     sys.stdout.write("\x1b[2J\x1b[H")
     sys.stdout.write(frame)
     sys.stdout.flush()

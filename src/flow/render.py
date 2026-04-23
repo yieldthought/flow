@@ -6,6 +6,7 @@ import ast
 import json
 import re
 import shlex
+import unicodedata
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
@@ -159,51 +160,137 @@ def render_top_dashboard(conn: Any, agents: list[dict[str, Any]], events: list[d
     return "\n".join(lines)
 
 
-def fit_list_top(text: str, height: int) -> str:
+def fit_list_top(text: str, height: int, width: int | None = None) -> str:
     lines = text.splitlines()
     if height <= 0:
         return ""
-    if len(lines) <= height:
+    if width is None:
+        if len(lines) <= height:
+            return text
+        if height == 1:
+            return lines[0]
+        shown = lines[: height - 1]
+        remaining = len(lines) - len(shown)
+        shown.append(color(f"... {remaining} more lines", PALETTE.muted))
+        return "\n".join(shown)
+
+    if _lines_screen_height(lines, width) <= height:
         return text
     if height == 1:
-        return lines[0]
-    shown = lines[: height - 1]
-    remaining = len(lines) - len(shown)
-    shown.append(color(f"... {remaining} more lines", PALETTE.muted))
+        return _clip_line_to_screen_rows(lines[0], width, 1) if lines else ""
+    if len(lines) == 1:
+        return _clip_line_to_screen_rows(lines[0], width, height)
+
+    shown: list[str] = []
+    used = 0
+    for index, line in enumerate(lines):
+        remaining_if_stopped = len(lines) - index
+        indicator = color(f"... {remaining_if_stopped} more lines", PALETTE.muted)
+        available = height - _line_screen_rows(indicator, width)
+        if available <= 0:
+            return _clip_line_to_screen_rows(indicator, width, height)
+
+        line_rows = _line_screen_rows(line, width)
+        if used + line_rows <= available:
+            shown.append(line)
+            used += line_rows
+            continue
+
+        if not shown and available > 0:
+            shown.append(_clip_line_to_screen_rows(line, width, available))
+        remaining = len(lines) - len(shown)
+        indicator = color(f"... {remaining} more lines", PALETTE.muted)
+        while shown and _lines_screen_height([*shown, indicator], width) > height:
+            shown.pop()
+            indicator = color(f"... {len(lines) - len(shown)} more lines", PALETTE.muted)
+        if _lines_screen_height([*shown, indicator], width) > height:
+            return _clip_line_to_screen_rows(indicator, width, height)
+        return "\n".join([*shown, indicator])
+
     return "\n".join(shown)
 
 
-def fit_show_top(text: str, height: int) -> str:
+def fit_show_top(text: str, height: int, width: int | None = None) -> str:
     lines = text.splitlines()
     if height <= 0:
         return ""
-    if len(lines) <= height:
+    if width is None:
+        if len(lines) <= height:
+            return text
+
+        header_end = next((index for index, line in enumerate(lines) if _strip_ansi(line).strip() == "Events"), -1)
+        if header_end < 0:
+            return "\n".join(lines[:height])
+
+        header_lines = lines[: header_end + 1]
+        body_lines = lines[header_end + 1 :]
+        if len(header_lines) >= height:
+            return "\n".join(header_lines[:height])
+        slots = height - len(header_lines)
+        if len(body_lines) <= slots:
+            return text
+        return "\n".join(header_lines + body_lines[-slots:])
+
+    if _lines_screen_height(lines, width) <= height:
         return text
 
     header_end = next((index for index, line in enumerate(lines) if _strip_ansi(line).strip() == "Events"), -1)
     if header_end < 0:
-        return "\n".join(lines[:height])
+        return "\n".join(_take_head_screen_rows(lines, height, width))
 
     header_lines = lines[: header_end + 1]
     body_lines = lines[header_end + 1 :]
-    if len(header_lines) >= height:
-        return "\n".join(header_lines[:height])
-    slots = height - len(header_lines)
-    if len(body_lines) <= slots:
+    header_height = _lines_screen_height(header_lines, width)
+    if header_height >= height:
+        return "\n".join(_take_head_screen_rows(header_lines, height, width))
+    slots = height - header_height
+    if _lines_screen_height(body_lines, width) <= slots:
         return text
-    return "\n".join(header_lines + body_lines[-slots:])
+    return "\n".join(header_lines + _take_tail_screen_rows(body_lines, slots, width))
 
 
-def fit_top_dashboard(text: str, height: int) -> str:
+def fit_top_dashboard(text: str, height: int, width: int | None = None) -> str:
     lines = text.splitlines()
     if height <= 0:
         return ""
-    if len(lines) <= height:
+    if width is None:
+        if len(lines) <= height:
+            return text
+
+        header_index = next((index for index, line in enumerate(lines) if _strip_ansi(line).strip() == "Recent Events"), -1)
+        if header_index < 0:
+            return fit_list_top(text, height)
+
+        summary_lines = lines[:header_index]
+        while summary_lines and not _strip_ansi(summary_lines[-1]).strip():
+            summary_lines.pop()
+        header_line = lines[header_index]
+        event_lines = lines[header_index + 1 :]
+        if not event_lines:
+            event_lines = [color("No recent events.", PALETTE.subtle)]
+
+        if height <= 2:
+            if height == 1:
+                return header_line
+            return "\n".join([header_line, event_lines[-1]])
+
+        min_event_lines = min(len(event_lines), 6)
+        reserved = 2 + min_event_lines
+        if height <= reserved:
+            body_keep = max(1, height - 1)
+            return "\n".join([header_line, *event_lines[-body_keep:]])
+
+        summary_text = fit_list_top("\n".join(summary_lines), height - reserved)
+        shown_summary = summary_text.splitlines() if summary_text else []
+        remaining = max(1, height - len(shown_summary) - 2)
+        return "\n".join([*shown_summary, "", header_line, *event_lines[-remaining:]])
+
+    if _lines_screen_height(lines, width) <= height:
         return text
 
     header_index = next((index for index, line in enumerate(lines) if _strip_ansi(line).strip() == "Recent Events"), -1)
     if header_index < 0:
-        return fit_list_top(text, height)
+        return fit_list_top(text, height, width=width)
 
     summary_lines = lines[:header_index]
     while summary_lines and not _strip_ansi(summary_lines[-1]).strip():
@@ -213,21 +300,136 @@ def fit_top_dashboard(text: str, height: int) -> str:
     if not event_lines:
         event_lines = [color("No recent events.", PALETTE.subtle)]
 
-    if height <= 2:
-        if height == 1:
-            return header_line
-        return "\n".join([header_line, event_lines[-1]])
+    header_rows = _line_screen_rows(header_line, width)
+    if height <= header_rows:
+        return _clip_line_to_screen_rows(header_line, width, height)
 
     min_event_lines = min(len(event_lines), 6)
-    reserved = 2 + min_event_lines
+    reserved_event_lines = event_lines[-min_event_lines:]
+    reserved = 1 + header_rows + _lines_screen_height(reserved_event_lines, width)
     if height <= reserved:
-        body_keep = max(1, height - 1)
-        return "\n".join([header_line, *event_lines[-body_keep:]])
+        return "\n".join([header_line, *_take_tail_screen_rows(event_lines, height - header_rows, width)])
 
-    summary_text = fit_list_top("\n".join(summary_lines), height - reserved)
+    summary_text = fit_list_top("\n".join(summary_lines), height - reserved, width=width)
     shown_summary = summary_text.splitlines() if summary_text else []
-    remaining = max(1, height - len(shown_summary) - 2)
-    return "\n".join([*shown_summary, "", header_line, *event_lines[-remaining:]])
+    remaining = height - _lines_screen_height(shown_summary, width) - 1 - header_rows
+    return "\n".join([*shown_summary, "", header_line, *_take_tail_screen_rows(event_lines, remaining, width)])
+
+
+def _lines_screen_height(lines: list[str], width: int | None) -> int:
+    return sum(_line_screen_rows(line, width) for line in lines)
+
+
+def _line_screen_rows(line: str, width: int | None) -> int:
+    if width is None:
+        return 1
+    columns = max(1, int(width))
+    visible_width = _display_width(_strip_ansi(line))
+    return max(1, (visible_width + columns - 1) // columns)
+
+
+def _take_head_screen_rows(lines: list[str], rows: int, width: int) -> list[str]:
+    if rows <= 0:
+        return []
+    shown: list[str] = []
+    used = 0
+    for line in lines:
+        line_rows = _line_screen_rows(line, width)
+        if used + line_rows <= rows:
+            shown.append(line)
+            used += line_rows
+            continue
+        remaining = rows - used
+        if remaining > 0:
+            shown.append(_clip_line_to_screen_rows(line, width, remaining))
+        break
+    return shown
+
+
+def _take_tail_screen_rows(lines: list[str], rows: int, width: int) -> list[str]:
+    if rows <= 0:
+        return []
+    shown: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        line_rows = _line_screen_rows(line, width)
+        if used + line_rows <= rows:
+            shown.insert(0, line)
+            used += line_rows
+            continue
+        remaining = rows - used
+        if remaining > 0:
+            shown.insert(0, _clip_line_to_screen_rows(line, width, remaining))
+        break
+    return shown
+
+
+def _clip_line_to_screen_rows(line: str, width: int | None, rows: int) -> str:
+    if width is None:
+        return line
+    if rows <= 0:
+        return ""
+    if _line_screen_rows(line, width) <= rows:
+        return line
+    return _clip_line_to_cells(line, max(1, int(width)) * rows)
+
+
+def _clip_line_to_cells(line: str, cells: int) -> str:
+    if cells <= 0:
+        return ""
+    if _display_width(_strip_ansi(line)) <= cells:
+        return line
+
+    marker = "..." if cells >= 3 else "." * cells
+    visible_limit = max(0, cells - len(marker))
+    out: list[str] = []
+    used = 0
+    saw_ansi = False
+    position = 0
+    stopped = False
+
+    for match in ANSI_RE.finditer(line):
+        used, stopped = _append_visible_cells(line[position : match.start()], out, used, visible_limit)
+        if stopped:
+            break
+        out.append(match.group(0))
+        saw_ansi = True
+        position = match.end()
+    if not stopped:
+        _append_visible_cells(line[position:], out, used, visible_limit)
+
+    clipped = "".join(out) + marker
+    if saw_ansi:
+        clipped += "\x1b[0m"
+    return clipped
+
+
+def _append_visible_cells(segment: str, out: list[str], used: int, limit: int) -> tuple[int, bool]:
+    for char in segment:
+        width = _char_screen_width(char, used)
+        if used + width > limit:
+            return used, True
+        out.append(char)
+        used += width
+    return used, False
+
+
+def _display_width(text: str) -> int:
+    width = 0
+    for char in text:
+        width += _char_screen_width(char, width)
+    return width
+
+
+def _char_screen_width(char: str, current_width: int) -> int:
+    if char == "\t":
+        return 8 - (current_width % 8)
+    category = unicodedata.category(char)
+    if unicodedata.combining(char) or category.startswith("M"):
+        return 0
+    if category in {"Cc", "Cf"}:
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
 
 
 def _render_agent(conn: Any, agent: dict[str, Any], *, id_width: int, status_width: int) -> str:

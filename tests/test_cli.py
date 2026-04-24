@@ -16,6 +16,7 @@ from flow.cli import (
     _draw_top_frame,
     cmd_catalog,
     cmd_list,
+    cmd_queue_and_wait,
     cmd_restart,
     cmd_self_test,
     cmd_show,
@@ -24,12 +25,15 @@ from flow.cli import (
     cmd_view,
     main,
     run_top_mode,
+    wait_for_agent_absent,
+    wait_for_shutdown,
 )
 from flow.common import format_utc, utc_now
 from flow.render import fit_list_top, fit_show_top, fit_top_dashboard, render_list, render_show, render_top_dashboard
 from flow.store import (
     connect,
     create_agent,
+    daemon_status,
     get_agent,
     get_meta,
     init_db,
@@ -38,6 +42,7 @@ from flow.store import (
     record_agent_event,
     record_daemon_event,
     record_flow_snapshot,
+    set_daemon_status,
     set_meta,
     update_agent,
 )
@@ -47,6 +52,21 @@ from flow.flowfile import flow_to_dict, load_flow, parse_start_arguments, render
 def write_flow(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def test_daemon_status_treats_permission_error_as_active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    set_daemon_status(conn, 12345, started_at="2026-04-02T10:00:00Z", heartbeat_at="2026-04-02T10:01:00Z")
+
+    def fake_kill(pid: int, signal_number: int) -> None:
+        assert pid == 12345
+        assert signal_number == 0
+        raise PermissionError()
+
+    monkeypatch.setattr("flow.store.os.kill", fake_kill)
+
+    assert daemon_status(conn)["active"] == "1"
 
 
 def test_cmd_validate_success(tmp_path: Path, capsys: object) -> None:
@@ -471,6 +491,53 @@ def test_main_self_test_subcommand_runs(tmp_path: Path, monkeypatch: object) -> 
 
     assert main(["self-test"]) == 0
     assert called == {"self_test": True}
+
+
+def test_cmd_queue_and_wait_reports_daemon_start_failure(
+    tmp_path: Path,
+    monkeypatch: object,
+    capsys: object,
+) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(flow_path), {}, cwd_override=str(tmp_path))
+    snapshot_id = record_flow_snapshot(conn, flow, json.dumps(flow_to_dict(flow), sort_keys=True))
+    agent_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="codex",
+        start_state=flow.start_states[0],
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+    monkeypatch.setattr("flow.cli.ensure_daemon", lambda _conn: False)
+
+    assert cmd_queue_and_wait(conn, agent_id, "resume", {}) == 1
+
+    assert "failed to start runtime daemon" in capsys.readouterr().err
+    assert conn.execute("SELECT COUNT(*) AS count FROM commands").fetchone()["count"] == 0
 
 
 def test_cmd_self_test_uses_current_environment_and_cleans_up(
@@ -1020,6 +1087,94 @@ def test_cmd_restart_inits_directly_when_inactive(tmp_path: Path, monkeypatch: o
 
     assert cmd_restart(conn) == 0
     assert calls == ["init"]
+
+
+def test_wait_for_agent_absent_reports_timeout(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(flow_path), {}, cwd_override=str(tmp_path))
+    snapshot_id = record_flow_snapshot(conn, flow, json.dumps(flow_to_dict(flow), sort_keys=True))
+    agent_id = create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="codex",
+        start_state=flow.start_states[0],
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+
+    error = wait_for_agent_absent(conn, agent_id, command_id=999, timeout=0.01)
+
+    assert error == f"timed out waiting for agent {agent_id} deletion"
+
+
+def test_wait_for_shutdown_reports_timeout_for_live_session(tmp_path: Path, monkeypatch: object) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+start:
+  start: true
+  prompt: hi
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    flow = render_flow(load_flow(flow_path), {}, cwd_override=str(tmp_path))
+    snapshot_id = record_flow_snapshot(conn, flow, json.dumps(flow_to_dict(flow), sort_keys=True))
+    create_agent(
+        conn,
+        flow_snapshot_id=snapshot_id,
+        flow_name=flow.name,
+        source_path=flow.source_path,
+        backend="codex",
+        start_state=flow.start_states[0],
+        cwd=str(tmp_path),
+        mode="yolo",
+        thinking="xhigh",
+        args_json="{}",
+    )
+
+    class LiveBackend:
+        def session_exists(self, agent: object) -> bool:
+            return True
+
+    monkeypatch.setattr("flow.cli.CodexBackend", LiveBackend)
+
+    error = wait_for_shutdown(conn, "", stop_daemon=False, timeout=0.01)
+
+    assert error == "timed out waiting for runtime shutdown"
 
 
 def test_cmd_list_top_updates_diagnostics_watermark_on_exit(tmp_path: Path, monkeypatch: object) -> None:

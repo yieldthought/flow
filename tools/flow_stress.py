@@ -445,7 +445,7 @@ def build_scenario_summary(
     problematic_prompt_snapshots = [
         snapshot
         for snapshot in snapshot_payload
-        if snapshot["prompt_class"] in {"rename-command", "flow-control", "matches-last-submitted-prompt"}
+        if snapshot["prompt_class"] in {"flow-control", "matches-last-submitted-prompt"}
     ]
     return {
         "generated_at": iso_now(),
@@ -581,7 +581,7 @@ def run_suite(args: argparse.Namespace) -> int:
 
     write_json(output_dir / "suite-summary.json", suite_summary)
     (output_dir / "suite-summary.md").write_text(render_suite_markdown(suite_summary), encoding="utf-8")
-    return 0
+    return 0 if suite_succeeded(suite_summary) else 1
 
 
 def render_suite_markdown(summary: dict[str, Any]) -> str:
@@ -604,6 +604,19 @@ def render_suite_markdown(summary: dict[str, Any]) -> str:
             f"problematic_prompt_snapshots=`{scenario['problematic_prompt_snapshot_count']}`"
         )
     return "\n".join(lines) + "\n"
+
+
+def suite_succeeded(summary: dict[str, Any]) -> bool:
+    for scenario in summary["scenarios"]:
+        if not scenario["root_finished"]:
+            return False
+        if scenario["root_end_state"] != "success":
+            return False
+        if scenario["stalled"]:
+            return False
+        if scenario["problematic_prompt_snapshot_count"]:
+            return False
+    return True
 
 
 def compare_reports(args: argparse.Namespace) -> int:

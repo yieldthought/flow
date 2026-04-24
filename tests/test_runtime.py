@@ -215,6 +215,139 @@ done:
     )
 
 
+def test_runtime_records_submitting_turn_before_backend_send_prompt(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+
+    class ObservingBackend(FakeBackend):
+        def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
+            persisted = dict(get_agent(conn, int(agent["id"])))
+            assert persisted["phase"] == "submitting"
+            assert persisted["current_turn_kind"] == "state_prompt"
+            assert persisted["current_request_id"] == request_id
+            assert persisted["current_turn_started_at"]
+            return super().send_prompt(agent, prompt, request_id=request_id)
+
+    backend = ObservingBackend()
+    runtime = Runtime(backend=backend)
+
+    runtime.tick(conn)
+
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["phase"] == "working"
+    assert agent["current_request_id"]
+    assert agent["last_prompt_sent_at"]
+
+
+def test_runtime_backend_calls_do_not_hold_write_transaction(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    create_runtime_agent(conn, flow_path, {})
+
+    class LockCheckingBackend(FakeBackend):
+        def ensure_session(self, agent: dict[str, Any]) -> dict[str, str]:
+            assert not conn.in_transaction
+            return super().ensure_session(agent)
+
+        def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
+            assert not conn.in_transaction
+            return super().send_prompt(agent, prompt, request_id=request_id)
+
+    runtime = Runtime(backend=LockCheckingBackend())
+
+    runtime.tick(conn)
+
+
+def test_runtime_recovery_does_not_resend_unacknowledged_submitting_turn(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+    update_agent(
+        conn,
+        agent_id,
+        phase="submitting",
+        current_turn_kind="state_prompt",
+        current_turn_started_at="2026-04-18T08:16:37Z",
+        current_request_id="req-existing",
+    )
+
+    class PendingBackend(FakeBackend):
+        def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
+            raise AssertionError("submitting turns must not be resent without rollout acknowledgement")
+
+        def poll_turn(self, agent: dict[str, Any]) -> TurnObservation:
+            return TurnObservation(status="pending")
+
+    runtime = Runtime(backend=PendingBackend())
+
+    runtime.tick(conn)
+
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["substate"] == "normal"
+    assert agent["phase"] == "submitting"
+    assert agent["status_message"] == "Waiting for state_prompt acknowledgement"
+    assert agent["current_request_id"] == "req-existing"
+    assert agent["current_turn_started_at"] == "2026-04-18T08:16:37Z"
+
+
 def test_parse_decision_normalizes_legacy_implicit_transition_aliases() -> None:
     assert parse_decision('{"choice":"needs_help","reason":"blocked"}').choice == "needs-help"
     assert parse_decision('{"choice":"keep_working","reason":"one more thing"}').choice == "keep-working"

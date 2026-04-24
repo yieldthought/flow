@@ -148,8 +148,8 @@ def _ensure_daemon(conn: Any) -> bool:
             stderr=handle,
             start_new_session=True,
         )
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
         time.sleep(0.1)
         status = daemon_status(conn)
         if status["active"] == "1":
@@ -160,8 +160,8 @@ def _ensure_daemon(conn: Any) -> bool:
 
 
 def _wait_for_command(conn: Any, command_id: int, timeout: float = 10.0) -> str:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         row = conn.execute("SELECT processed_at, error_text FROM commands WHERE id=?", (command_id,)).fetchone()
         if row is None:
             return ""
@@ -178,8 +178,8 @@ def _find_open_port() -> int:
 
 
 def _wait_for_server(host: str, port: int, thread: threading.Thread, timeout: float = 5.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if not thread.is_alive():
             raise RuntimeError("flow UI server exited before becoming ready")
         try:

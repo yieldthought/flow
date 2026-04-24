@@ -20,6 +20,8 @@ from typing import Any
 from .common import format_utc, parse_utc, pending_state_payload, utc_now
 from .scratchpad import ensure_scratchpad_dir
 
+_SUBMIT_RETRY_INTERVAL_SECONDS = 1.5
+
 
 @dataclass(frozen=True)
 class TurnObservation:
@@ -93,7 +95,7 @@ class CodexBackend(AgentBackend):
 
     def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
         target = f"{agent['tmux_session']}:0.0"
-        self._wait_for_prompt_ready(agent["tmux_session"])
+        self._ensure_codex_prompt_ready(agent)
         self._clear_prompt_input(agent["tmux_session"])
         baseline = self._capture_pane_text(target)
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
@@ -108,6 +110,7 @@ class CodexBackend(AgentBackend):
                 started_after=submitted_at,
                 timeout_seconds=30.0,
                 request_id=request_id,
+                prompt_text=prompt,
             )
         finally:
             try:
@@ -122,7 +125,7 @@ class CodexBackend(AgentBackend):
         if not sanitized:
             return False
 
-        self._wait_for_prompt_ready(session)
+        self._ensure_codex_prompt_ready(agent)
         baseline = self._capture_pane_text(target)
         self._clear_prompt_input(session)
         baseline = self._capture_pane_text(target)
@@ -131,7 +134,7 @@ class CodexBackend(AgentBackend):
             buffer_path = handle.name
         try:
             self._run_tmux(["load-buffer", buffer_path])
-            self._run_tmux(["paste-buffer", "-d", "-t", target])
+            self._paste_loaded_buffer(target)
             self._wait_for_paste_settle(target, baseline)
             submitted_at = utc_now()
             self._run_tmux(["send-keys", "-t", target, "Enter"])
@@ -262,10 +265,16 @@ class CodexBackend(AgentBackend):
 
         resolved_path, resolved_thread_id = self._resolve_rollout(thread_id, rollout_path, launch_marker, turn_started_at)
         if not resolved_path:
+            permission_prompt = self._permission_prompt_reason(agent)
+            if permission_prompt:
+                raise RuntimeError(permission_prompt)
             return TurnObservation(status="pending")
 
         events = _read_rollout_events(Path(resolved_path))
         if not events:
+            permission_prompt = self._permission_prompt_reason(agent)
+            if permission_prompt:
+                raise RuntimeError(permission_prompt)
             return TurnObservation(status="pending", thread_id=resolved_thread_id, rollout_path=resolved_path)
         request_acknowledged_at = _request_acknowledged_at(
             events,
@@ -336,7 +345,9 @@ class CodexBackend(AgentBackend):
         self._run_tmux(["send-keys", "-t", target, "C-c"], check=False)
         self._run_tmux(["send-keys", "-t", target, "Enter"], check=False)
         self._run_tmux(["send-keys", "-t", target, "C-l"], check=False)
-        self._run_tmux(["send-keys", "-t", target, self._launch_command(agent), "Enter"])
+        baseline = self._capture_pane_text(target)
+        self._paste_text(target, self._launch_command(agent), baseline=baseline)
+        self._run_tmux(["send-keys", "-t", target, "Enter"])
 
     def _launch_command(self, agent: dict[str, Any]) -> str:
         parts = self._launch_parts(agent)
@@ -428,17 +439,15 @@ class CodexBackend(AgentBackend):
             self._run_tmux(["set-environment", "-t", session, name, value], check=False)
 
     def _wait_for_session(self, session: str, timeout_seconds: float = 2.0) -> None:
-        deadline = utc_now().timestamp() + timeout_seconds
-        while utc_now().timestamp() < deadline:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
             if subprocess.run(["tmux", "has-session", "-t", session], capture_output=True, text=True).returncode == 0:
                 return
-            import time
-
             time.sleep(0.05)
         raise RuntimeError(f"tmux session '{session}' did not stay alive after creation")
 
     def _wait_for_codex_ready(self, session: str, timeout_seconds: float = 120.0) -> None:
-        deadline = utc_now().timestamp() + timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         target = f"{session}:0.0"
         last_trust_confirm_at = 0.0
         last_text = ""
@@ -468,7 +477,7 @@ class CodexBackend(AgentBackend):
                         f"({launch_failure}; tail={_pane_tail_summary(text)})"
                     )
                 if _looks_like_codex_trust_prompt(text, current_command=current_command):
-                    now_ts = utc_now().timestamp()
+                    now_ts = time.monotonic()
                     stable_ready_count = 0
                     previous_ready_snapshot = ""
                     if now_ts - last_trust_confirm_at >= 1.0:
@@ -490,7 +499,7 @@ class CodexBackend(AgentBackend):
                 else:
                     stable_ready_count = 0
                     previous_ready_snapshot = ""
-            if utc_now().timestamp() >= deadline:
+            if time.monotonic() >= deadline:
                 break
             time.sleep(0.1)
         raise RuntimeError(
@@ -499,7 +508,7 @@ class CodexBackend(AgentBackend):
         )
 
     def _wait_for_prompt_ready(self, session: str, timeout_seconds: float = 15.0) -> None:
-        deadline = utc_now().timestamp() + timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         target = f"{session}:0.0"
         stable_ready_count = 0
         previous_ready_snapshot = ""
@@ -518,24 +527,50 @@ class CodexBackend(AgentBackend):
             else:
                 stable_ready_count = 0
                 previous_ready_snapshot = ""
-            if utc_now().timestamp() >= deadline:
+            if time.monotonic() >= deadline:
                 break
             time.sleep(0.1)
         raise RuntimeError(f"Codex prompt input did not become ready in tmux session '{session}'")
 
+    def _ensure_codex_prompt_ready(self, agent: dict[str, Any], timeout_seconds: float = 120.0) -> None:
+        session = agent["tmux_session"]
+        if not self._session_has_live_codex(session):
+            self._launch_codex(agent)
+            self._wait_for_codex_ready(session, timeout_seconds=timeout_seconds)
+            return
+        try:
+            self._wait_for_prompt_ready(session)
+        except RuntimeError:
+            if self._session_has_live_codex(session):
+                raise
+            self._launch_codex(agent)
+            self._wait_for_codex_ready(session, timeout_seconds=timeout_seconds)
+
     def _clear_prompt_input(self, session: str, timeout_seconds: float = 5.0) -> None:
         target = f"{session}:0.0"
-        # On Linux/npm Codex, Ctrl-U clears any stale typed prompt content and
-        # restores the built-in placeholder without starting a turn.
-        self._run_tmux(["send-keys", "-t", target, "C-u"], check=False)
+        text = self._capture_pane_text(target)
+        current_command = self._pane_current_command(target)
+        if not _is_codex_process_name(current_command):
+            self._wait_for_prompt_ready(session, timeout_seconds=timeout_seconds)
+            return
+
+        content = _visible_prompt_content(text)
+        if content is None or not content.strip() or _is_codex_placeholder_prompt_content(content):
+            return
+
+        # Ctrl-C clears Codex's whole draft composer when text is present. This
+        # is safer than Ctrl-U, which only clears one logical line in multiline
+        # prompts and can leave stale flow-control text behind. Do not send it
+        # on a blank composer: Codex treats that as an exit request.
+        self._run_tmux(["send-keys", "-t", target, "C-c"], check=False)
         self._wait_for_prompt_ready(session, timeout_seconds=timeout_seconds)
 
     def _wait_for_paste_settle(self, target: str, baseline: str, timeout_seconds: float = 5.0) -> None:
-        deadline = utc_now().timestamp() + timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         saw_change = False
         stable_text = ""
         stable_count = 0
-        while utc_now().timestamp() < deadline:
+        while time.monotonic() < deadline:
             text = self._capture_pane_text(target)
             if text != baseline:
                 saw_change = True
@@ -552,17 +587,32 @@ class CodexBackend(AgentBackend):
 
     def _paste_prompt(self, target: str, buffer_path: str, baseline: str) -> None:
         self._run_tmux(["load-buffer", buffer_path])
-        self._run_tmux(["paste-buffer", "-d", "-t", target])
+        self._paste_loaded_buffer(target)
         self._wait_for_paste_settle(target, baseline)
 
+    def _paste_text(self, target: str, text: str, *, baseline: str | None = None) -> None:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            handle.write(text)
+            buffer_path = handle.name
+        try:
+            self._run_tmux(["load-buffer", buffer_path])
+            self._paste_loaded_buffer(target)
+            if baseline is not None:
+                self._wait_for_paste_settle(target, baseline)
+        finally:
+            try:
+                os.unlink(buffer_path)
+            except FileNotFoundError:
+                pass
+
+    def _paste_loaded_buffer(self, target: str) -> None:
+        # Bracketed raw paste keeps multiline prompts as one paste event; plain
+        # tmux paste turns newlines into Enter keypresses that Codex may treat
+        # as paste content instead of prompt submission.
+        self._run_tmux(["paste-buffer", "-d", "-p", "-r", "-t", target])
+
     def _submit_prompt(self, target: str) -> None:
-        for _attempt in range(5):
-            self._run_tmux(["send-keys", "-t", target, "Enter"])
-            time.sleep(0.25)
-            text = self._capture_pane_text(target)
-            current_command = self._pane_current_command(target)
-            if not _looks_like_codex_prompt_ready(text, current_command=current_command):
-                return
+        self._run_tmux(["send-keys", "-t", target, "Enter"])
 
     def _wait_for_thread_rename_event(
         self,
@@ -579,8 +629,8 @@ class CodexBackend(AgentBackend):
         if not resolved_path:
             return False
 
-        deadline = utc_now().timestamp() + timeout_seconds
-        while utc_now().timestamp() < deadline:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
             if _thread_name_updated_seen(
                 _read_rollout_events(Path(resolved_path)),
                 expected_name=name,
@@ -598,13 +648,17 @@ class CodexBackend(AgentBackend):
         started_after: datetime,
         timeout_seconds: float = 10.0,
         request_id: str = "",
+        prompt_text: str = "",
     ) -> TurnObservation:
-        deadline = utc_now().timestamp() + timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         thread_id = agent.get("thread_id", "") or ""
         rollout_path = agent.get("rollout_path", "") or ""
         launch_marker = agent.get("launch_marker", "") or ""
+        target = f"{agent['tmux_session']}:0.0"
+        submit_attempts = 0
+        last_submit_attempt = time.monotonic()
 
-        while utc_now().timestamp() < deadline:
+        while time.monotonic() < deadline:
             resolved_path, resolved_thread_id = self._resolve_rollout(
                 thread_id,
                 rollout_path,
@@ -648,8 +702,26 @@ class CodexBackend(AgentBackend):
                         started_at=request_acknowledged_at,
                         last_event_at=request_acknowledged_at,
                     )
+            now = time.monotonic()
+            if (
+                request_id
+                and submit_attempts < 2
+                and now - last_submit_attempt >= _SUBMIT_RETRY_INTERVAL_SECONDS
+            ):
+                text = self._capture_pane_text(target)
+                current_command = self._pane_current_command(target)
+                if (
+                    _looks_like_codex_prompt_ready(text, current_command=current_command)
+                    and not _codex_working_seen(text)
+                    and (
+                        _current_prompt_block_contains_request_id(text, request_id)
+                        or _current_prompt_block_contains_paste_placeholder(text, len(prompt_text))
+                    )
+                ):
+                    self._submit_prompt(target)
+                    submit_attempts += 1
+                    last_submit_attempt = now
             time.sleep(0.1)
-        target = f"{agent['tmux_session']}:0.0"
         text = self._capture_pane_text(target)
         current_command = self._pane_current_command(target)
         auth_failure = _codex_prompt_submission_failure_reason(text, current_command=current_command)
@@ -673,6 +745,8 @@ class CodexBackend(AgentBackend):
         if not _is_codex_process_name(current_command):
             return False
         text = self._capture_pane_text(target)
+        if _codex_session_finished_seen(text):
+            return False
         return _codex_prompt_submission_failure_reason(text, current_command=current_command) is None
 
     def _permission_prompt_reason(self, agent: dict[str, Any]) -> str | None:
@@ -933,6 +1007,7 @@ def _find_turn(
     turns: list[dict[str, str]] = []
     candidate: dict[str, str] | None = None
     bucket: list[dict[str, Any]] = []
+    pending_request_id = ""
 
     def finalize_bucket() -> None:
         nonlocal candidate, bucket
@@ -991,14 +1066,19 @@ def _find_turn(
                 "output_text": "",
                 "raw_output": "",
                 "last_event_at": event.get("timestamp") or "",
-                "request_id": "",
+                "request_id": pending_request_id,
                 "abort_reason": "",
             }
+            pending_request_id = ""
             continue
         if bucket:
             bucket.append(event)
             if candidate is not None:
                 candidate["last_event_at"] = event.get("timestamp") or candidate["last_event_at"]
+            continue
+        request_id = _event_request_id(event)
+        if request_id:
+            pending_request_id = request_id
 
     finalize_bucket()
 
@@ -1187,6 +1267,16 @@ def _codex_prompt_submission_failure_reason(text: str, *, current_command: str =
     return None
 
 
+def _codex_session_finished_seen(text: str) -> bool:
+    tail_lines = [line.strip().lower() for line in text.splitlines()[-16:] if line.strip()]
+    return any("to continue this session, run codex resume" in line for line in tail_lines)
+
+
+def _codex_working_seen(text: str) -> bool:
+    tail = "\n".join(line.strip().lower() for line in text.splitlines()[-16:] if line.strip())
+    return "working (" in tail and "esc to interrupt" in tail
+
+
 def _looks_like_codex_tui_ready(text: str, *, current_command: str = "") -> bool:
     command = current_command.strip().lower()
     if "OpenAI Codex" in text and any(marker in text for marker in ("model:", "directory:", "gpt-5.4", "gpt-5")):
@@ -1205,6 +1295,8 @@ def _looks_like_codex_tui_ready(text: str, *, current_command: str = "") -> bool
 
 def _looks_like_codex_prompt_ready(text: str, *, current_command: str = "") -> bool:
     if not _is_codex_process_name(current_command):
+        return False
+    if _codex_working_seen(text):
         return False
     if _looks_like_codex_trust_prompt(text, current_command=current_command):
         return False
@@ -1269,6 +1361,11 @@ def _codex_permission_prompt_reason(text: str, *, current_command: str = "") -> 
             "allow codex to run",
             "requires approval by policy",
             "requires approval:",
+            "would you like to run the following command?",
+            "would you like to run this command?",
+            "press enter to confirm or esc to cancel",
+            "yes, proceed",
+            "yes, and don't ask again",
         )
     ):
         return None
@@ -1294,6 +1391,54 @@ def _visible_prompt_content(text: str) -> str | None:
         if line.startswith("› "):
             return line[2:]
     return None
+
+
+def _current_prompt_block(text: str) -> str:
+    lines = [line.rstrip("\r") for line in text.splitlines()]
+    start = None
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].lstrip().startswith("›"):
+            start = index
+            break
+    if start is None:
+        return ""
+    block: list[str] = []
+    for offset, raw_line in enumerate(lines[start:]):
+        line = raw_line.lstrip()
+        if offset == 0 and line.startswith("›"):
+            block.append(line[1:].lstrip())
+        else:
+            block.append(raw_line)
+    return "\n".join(block)
+
+
+def _current_prompt_block_contains_request_id(text: str, request_id: str) -> bool:
+    if not request_id:
+        return False
+    return request_id in _current_prompt_block(text)
+
+
+def _current_prompt_block_contains_paste_placeholder(text: str, char_count: int) -> bool:
+    if char_count <= 0:
+        return False
+    return f"[Pasted Content {char_count} chars]" in _current_prompt_block(text)
+
+
+_CODEX_PLACEHOLDER_PROMPTS = {
+    "Explain this codebase",
+    "Summarize recent commits",
+    "Implement {feature}",
+    "Implement {{feature}}",
+    "Find and fix a bug in @filename",
+    "Write tests for @filename",
+    "Improve documentation in @filename",
+    "Run /review on my current changes",
+    "Use /skills to list available skills",
+}
+
+
+def _is_codex_placeholder_prompt_content(content: str) -> bool:
+    return content.strip() in _CODEX_PLACEHOLDER_PROMPTS
 
 
 def _sanitize_thread_name(name: str) -> str:

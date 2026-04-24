@@ -429,9 +429,11 @@ def _delete_self_test_agent(conn: Any, agent_id: int) -> str:
 
 
 def cmd_queue_and_wait(conn: Any, agent_id: int, kind: str, payload: dict[str, Any]) -> int:
-    ensure_daemon(conn)
     if get_agent(conn, agent_id) is None:
         print(f"error: unknown agent {agent_id}", file=sys.stderr)
+        return 1
+    if not ensure_daemon(conn):
+        print("error: failed to start runtime daemon", file=sys.stderr)
         return 1
     command_id = enqueue_command(conn, agent_id, kind, payload, actor=current_actor(), source="cli")
     conn.commit()
@@ -597,14 +599,19 @@ def cmd_delete(conn: Any, agent_id: int) -> int:
         print(f"error: unknown agent {agent_id}", file=sys.stderr)
         return 1
     agent = dict(row)
+    if not ensure_daemon(conn):
+        print("error: failed to start runtime daemon", file=sys.stderr)
+        return 1
     if not agent["ended_at"]:
-        ensure_daemon(conn)
         stop_result = cmd_queue_and_wait(conn, agent_id, "stop", {})
         if stop_result != 0:
             return stop_result
     command_id = enqueue_command(conn, agent_id, "delete", {})
     conn.commit()
-    wait_for_agent_absent(conn, agent_id, command_id)
+    error = wait_for_agent_absent(conn, agent_id, command_id)
+    if error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -635,7 +642,10 @@ def cmd_shutdown(conn: Any, tokens: list[str]) -> int:
         set_meta(conn, "shutdown_flow", flow_name)
         set_meta(conn, "shutdown_requested_at", format_utc(utc_now()))
 
-    wait_for_shutdown(conn, flow_name, stop_daemon=not flow_name)
+    error = wait_for_shutdown(conn, flow_name, stop_daemon=not flow_name)
+    if error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -652,8 +662,8 @@ def ensure_daemon(conn: Any) -> bool:
             stderr=handle,
             start_new_session=True,
         )
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
         time.sleep(0.1)
         status = daemon_status(conn)
         if status["active"] == "1":
@@ -664,8 +674,8 @@ def ensure_daemon(conn: Any) -> bool:
 
 
 def wait_for_command(conn: Any, command_id: int, timeout: float = 10.0) -> str:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         row = conn.execute("SELECT processed_at, error_text FROM commands WHERE id=?", (command_id,)).fetchone()
         if row is None:
             return ""
@@ -675,31 +685,34 @@ def wait_for_command(conn: Any, command_id: int, timeout: float = 10.0) -> str:
     return "timed out waiting for command processing"
 
 
-def wait_for_agent_absent(conn: Any, agent_id: int, command_id: int, timeout: float = 10.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+def wait_for_agent_absent(conn: Any, agent_id: int, command_id: int, timeout: float = 10.0) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         agent = get_agent(conn, agent_id)
         if agent is None:
-            return
+            return ""
         row = conn.execute("SELECT processed_at, error_text FROM commands WHERE id=?", (command_id,)).fetchone()
         if row is not None and row["processed_at"] and row["error_text"]:
-            raise RuntimeError(str(row["error_text"]))
+            return str(row["error_text"])
         time.sleep(0.1)
+    return f"timed out waiting for agent {agent_id} deletion"
 
 
-def wait_for_shutdown(conn: Any, flow_name: str, *, stop_daemon: bool, timeout: float = 30.0) -> None:
+def wait_for_shutdown(conn: Any, flow_name: str, *, stop_daemon: bool, timeout: float = 30.0) -> str:
     backend = CodexBackend()
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         agents = [dict(row) for row in list_agents(conn, flow_name or None)]
         targeted = [agent for agent in agents if not agent["ended_at"]]
         if all(not backend.session_exists(agent) for agent in targeted):
             if not stop_daemon:
-                return
+                return ""
             status = daemon_status(conn)
             if status["active"] != "1":
-                return
+                return ""
         time.sleep(0.2)
+    target = f" for flow '{flow_name}'" if flow_name else ""
+    return f"timed out waiting for runtime shutdown{target}"
 
 
 def _render_catalog_text(payload: dict[str, Any]) -> str:

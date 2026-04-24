@@ -551,6 +551,10 @@ def daemon_status(conn: sqlite3.Connection) -> dict[str, str]:
     if pid_text.isdigit():
         try:
             os.kill(int(pid_text), 0)
+        except ProcessLookupError:
+            active = False
+        except PermissionError:
+            active = True
         except OSError:
             active = False
         else:

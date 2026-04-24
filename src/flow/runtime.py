@@ -137,22 +137,22 @@ class Runtime:
         set_daemon_status(conn, os.getpid(), heartbeat_at=format_utc(utc_now()))
         with transaction(conn):
             self._recover_agents_after_restart(conn)
-            self._process_commands(conn)
-            self._process_shutdown(conn)
-            for row in list_agents(conn):
-                agent = dict(row)
-                try:
-                    self._tick_agent(conn, agent)
-                except Exception as exc:  # pragma: no cover - defensive runtime guard
-                    details = traceback.format_exc().rstrip()
-                    self._enter_needs_help(conn, agent, str(exc))
-                    if str(exc) != str(agent.get("last_error") or ""):
-                        record_daemon_event(
-                            conn,
-                            level="warning",
-                            message=f"agent #{agent['id']} {agent['flow_name']}:{agent['current_state']} {exc}",
-                            details_text=details,
-                        )
+        self._process_commands(conn)
+        self._process_shutdown(conn)
+        for row in list_agents(conn):
+            agent = dict(row)
+            try:
+                self._tick_agent(conn, agent)
+            except Exception as exc:  # pragma: no cover - defensive runtime guard
+                details = traceback.format_exc().rstrip()
+                self._enter_needs_help(conn, agent, str(exc))
+                if str(exc) != str(agent.get("last_error") or ""):
+                    record_daemon_event(
+                        conn,
+                        level="warning",
+                        message=f"agent #{agent['id']} {agent['flow_name']}:{agent['current_state']} {exc}",
+                        details_text=details,
+                    )
 
     def _recover_agents_after_restart(self, conn: Any) -> None:
         if self._recovered:
@@ -162,26 +162,33 @@ class Runtime:
             if agent["ended_at"]:
                 continue
             phase = normalize_phase(agent["phase"])
-            fields = {
+            clear_turn_fields = {
                 "current_turn_id": "",
                 "current_turn_kind": "",
                 "current_turn_started_at": "",
                 "current_request_id": "",
-                "last_error": "",
             }
+            fields = {"last_error": ""}
             if agent["substate"] == "normal":
                 pending_kind = _pending_kind(agent)
-                if phase in {"waiting", "waiting_children"}:
+                if agent["current_turn_started_at"] and phase in {"working", "submitting"}:
+                    fields["phase"] = phase
+                elif phase in {"waiting", "waiting_children"}:
+                    fields.update(clear_turn_fields)
                     fields["phase"] = "waiting"
                     if phase == "waiting_children":
                         fields["phase"] = "waiting_children"
                 elif pending_kind == "children_wake":
+                    fields.update(clear_turn_fields)
                     fields["phase"] = "resume_state"
                 elif phase == "enter_state" and not agent["thread_id"] and not agent["last_prompt_sent_at"]:
+                    fields.update(clear_turn_fields)
                     fields["phase"] = "enter_state"
                 else:
+                    fields.update(clear_turn_fields)
                     fields["phase"] = "resume_state"
             else:
+                fields.update(clear_turn_fields)
                 fields["phase"] = "paused"
                 close_open_state_run(conn, int(agent["id"]))
             update_agent(conn, int(agent["id"]), **fields)
@@ -499,9 +506,32 @@ class Runtime:
             update_agent(conn, int(agent["id"]), **ensure)
             agent.update(ensure)
 
+        phase = agent["phase"]
         if agent["current_turn_started_at"]:
             observation = self.backend.poll_turn(agent)
             self._apply_turn_observation_metadata(conn, agent, observation)
+            if phase == "submitting":
+                if observation.status == "pending":
+                    update_agent(
+                        conn,
+                        int(agent["id"]),
+                        status_message=f"Waiting for {agent['current_turn_kind'] or 'turn'} acknowledgement",
+                    )
+                    return
+                fields = {
+                    "phase": "working",
+                    "status_message": f"Waiting for {agent['current_turn_kind'] or 'turn'}",
+                }
+                if observation.started_at:
+                    fields["current_turn_started_at"] = observation.started_at
+                    fields["last_prompt_sent_at"] = observation.started_at
+                    agent["current_turn_started_at"] = observation.started_at
+                    agent["last_prompt_sent_at"] = observation.started_at
+                if observation.turn_id:
+                    fields["current_turn_id"] = observation.turn_id
+                    agent["current_turn_id"] = observation.turn_id
+                update_agent(conn, int(agent["id"]), **fields)
+                agent["phase"] = "working"
             if observation.status == "aborted":
                 reason = observation.abort_reason or f"{agent['current_turn_kind'] or 'turn'} was aborted in Codex"
                 close_open_state_run(conn, int(agent["id"]))
@@ -546,7 +576,6 @@ class Runtime:
                 )
             return
 
-        phase = agent["phase"]
         if agent["shutdown_mode"]:
             self.backend.terminate(agent, immediate=False)
             update_agent(conn, int(agent["id"]), shutdown_mode="", phase="resume_state")
@@ -589,8 +618,20 @@ class Runtime:
             self._send_turn(conn, agent, prompt, "transition_eval", request_id=request_id)
 
     def _send_turn(self, conn: Any, agent: dict[str, Any], prompt: str, kind: str, *, request_id: str) -> None:
+        submitted_at = format_utc(utc_now())
+        pending_fields: dict[str, str] = {
+            "current_turn_kind": kind,
+            "current_turn_started_at": submitted_at,
+            "current_turn_id": "",
+            "current_request_id": request_id,
+            "phase": "submitting",
+            "status_message": f"Submitting {kind}",
+        }
+        update_agent(conn, int(agent["id"]), **pending_fields)
+        agent.update(pending_fields)
+
         observation = self.backend.send_prompt(agent, prompt, request_id=request_id)
-        now = observation.started_at or format_utc(utc_now())
+        now = observation.started_at or submitted_at
         fields: dict[str, str] = {
             "current_turn_kind": kind,
             "current_turn_started_at": now,
@@ -1044,18 +1085,22 @@ class Runtime:
                 state_name=agent["current_state"],
                 reason=reason,
             )
-        update_agent(
-            conn,
-            int(agent["id"]),
-            substate="needs_help",
-            phase="paused",
-            current_turn_id="",
-            current_turn_kind="",
-            current_turn_started_at="",
-            current_request_id="",
-            last_error=reason,
-            status_message="Needs help",
-        )
+        updates = {
+            "substate": "needs_help",
+            "phase": "paused",
+            "last_error": reason,
+            "status_message": "Needs help",
+        }
+        if not (agent.get("phase") == "submitting" and agent.get("current_turn_started_at")):
+            updates.update(
+                {
+                    "current_turn_id": "",
+                    "current_turn_kind": "",
+                    "current_turn_started_at": "",
+                    "current_request_id": "",
+                }
+            )
+        update_agent(conn, int(agent["id"]), **updates)
 
 
 def build_state_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any], *, request_id: str) -> str:

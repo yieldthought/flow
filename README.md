@@ -245,7 +245,7 @@ flow show 17 --json
 
 The `flow show --json` shape is fixed. Machine clients should rely on these rules:
 
-- `phase` is one of `enter_state`, `resume_state`, `continue_state`, `evaluate_transition`, `evaluate_terminal`, `waiting`, `waiting_children`, `needs_help`, `interaction`, `finished`, `stopped`.
+- `phase` is one of `enter_state`, `resume_state`, `continue_state`, `evaluate_transition`, `evaluate_terminal`, `submitting`, `working`, `waiting`, `waiting_children`, `needs_help`, `interaction`, `finished`, `stopped`.
 - `end_state` is populated only when the agent finished by reaching a flow-declared end state. It is `null` when the agent is still running, paused, or was stopped.
 - `terminated_reason` is `"finished"` when the agent reached an end state, `"stopped"` when it was stopped, and `null` otherwise.
 - `waiting_on.finished[]` entries carry `status`: `"finished"` when the child reached an end state, `"stopped"` when it was stopped, `"unknown"` when the id does not resolve to any agent. `end_state` in those entries follows the same null-when-not-a-flow-end-state rule.
@@ -500,6 +500,7 @@ Special substates:
 Other useful runtime phases:
 
 - `waiting`: waiting for `ready_at`
+- `submitting`: prompt submission is recorded locally while Codex acknowledges the turn
 - `working`: Codex is still working on the current prompt
 - `finished`: the agent reached an end state
 

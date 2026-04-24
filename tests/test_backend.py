@@ -1142,6 +1142,65 @@ def test_find_turn_matches_request_id_before_task_started() -> None:
     assert turn["output_text"] == "Done."
 
 
+def test_find_turn_matches_current_completion_after_overlapping_turn_started() -> None:
+    events = [
+        {
+            "timestamp": "2026-04-24T08:57:44.202Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "flow-turn"},
+        },
+        {
+            "timestamp": "2026-04-24T08:57:44.210Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": "[flow-control]\nrequest_id: req-flow\n[/flow-control]\n\nContinue.",
+            },
+        },
+        {
+            "timestamp": "2026-04-24T08:59:33.069Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Flow turn output before overlap."}],
+            },
+        },
+        {
+            "timestamp": "2026-04-24T09:00:29.095Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "manual-turn"},
+        },
+        {
+            "timestamp": "2026-04-24T09:00:29.100Z",
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "Manual prompt while Flow is still recording."},
+        },
+        {
+            "timestamp": "2026-04-24T09:01:40.177Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": "flow-turn",
+                "last_agent_message": "Flow turn completed after another turn started.",
+            },
+        },
+    ]
+
+    turn = _find_turn(
+        events,
+        current_turn_id="flow-turn",
+        current_request_id="req-flow",
+        started_after="2026-04-24T08:57:44.000Z",
+    )
+
+    assert turn is not None
+    assert turn["turn_id"] == "flow-turn"
+    assert turn["status"] == "completed"
+    assert turn["ended_at"] == "2026-04-24T09:01:40.177Z"
+    assert turn["output_text"] == "Flow turn completed after another turn started."
+
+
 def test_wait_for_turn_start_accepts_request_ack_without_task_start(monkeypatch: object) -> None:
     backend = CodexBackend()
     events = [

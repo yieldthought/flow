@@ -1082,10 +1082,40 @@ def _find_turn(
 
     finalize_bucket()
 
+    if current_turn_id:
+        matching_turns = [turn for turn in turns if turn.get("turn_id") == current_turn_id]
+        turn = matching_turns[-1] if matching_turns else None
+        terminal = _terminal_turn_event(events, current_turn_id)
+        if terminal is not None:
+            payload = terminal.get("payload") or {}
+            if turn is None:
+                started = _task_started_event(events, current_turn_id)
+                turn = {
+                    "turn_id": current_turn_id,
+                    "started_at": (started or {}).get("timestamp") or "",
+                    "ended_at": "",
+                    "status": "running",
+                    "output_text": "",
+                    "raw_output": "",
+                    "last_event_at": (started or terminal).get("timestamp") or "",
+                    "request_id": current_request_id,
+                    "abort_reason": "",
+                }
+            turn["last_event_at"] = terminal.get("timestamp") or turn["last_event_at"]
+            turn["ended_at"] = terminal.get("timestamp") or ""
+            if payload.get("type") == "task_complete":
+                turn["status"] = "completed"
+                last_message = payload.get("last_agent_message")
+                if isinstance(last_message, str) and last_message.strip():
+                    turn["output_text"] = last_message.strip()
+            elif payload.get("type") == "turn_aborted":
+                turn["status"] = "aborted"
+                abort_reason = str(payload.get("reason") or "").strip()
+                if abort_reason:
+                    turn["abort_reason"] = abort_reason
+        return turn
     if not turns:
         return None
-    if current_turn_id:
-        return turns[-1]
     if current_request_id:
         matching_turns = [turn for turn in turns if turn.get("request_id") == current_request_id]
         return matching_turns[-1] if matching_turns else None
@@ -1102,6 +1132,27 @@ def _find_turn(
         if turn_last_event_at is not None and turn_last_event_at >= started_after_dt:
             matching_turns.append(turn)
     return matching_turns[-1] if matching_turns else None
+
+
+def _task_started_event(events: list[dict[str, Any]], turn_id: str) -> dict[str, Any] | None:
+    for event in events:
+        payload = event.get("payload") or {}
+        if event.get("type") == "event_msg" and payload.get("type") == "task_started" and payload.get("turn_id") == turn_id:
+            return event
+    return None
+
+
+def _terminal_turn_event(events: list[dict[str, Any]], turn_id: str) -> dict[str, Any] | None:
+    terminal: dict[str, Any] | None = None
+    for event in events:
+        payload = event.get("payload") or {}
+        if (
+            event.get("type") == "event_msg"
+            and payload.get("type") in {"task_complete", "turn_aborted"}
+            and payload.get("turn_id") == turn_id
+        ):
+            terminal = event
+    return terminal
 
 
 def _assistant_text(payload: dict[str, Any]) -> str:

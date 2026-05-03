@@ -154,3 +154,73 @@ export interface LaunchContext {
   flowName: string;
   apiBaseUrl: string;
 }
+
+export interface EditorValidation {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export interface EditorArg {
+  name: string;
+  help: string;
+  default: string;
+}
+
+export interface EditorTransition {
+  id: string;
+  condition: string;
+  wait: string;
+  target: string;
+}
+
+export interface EditorState {
+  id: string;
+  name: string;
+  start: boolean;
+  end: boolean;
+  prompt: string;
+  wait: string;
+  mode: string;
+  thinking: string;
+  fast: boolean | null;
+  transitions: EditorTransition[];
+}
+
+export interface EditorFlowHeader {
+  name: string;
+  description: string;
+  version: string;
+  path: string;
+  mode: string;
+  thinking: string;
+  fast: boolean | null;
+  args: EditorArg[];
+}
+
+export interface EditorDocument {
+  path: string;
+  fileName: string;
+  yaml: string;
+  flow: EditorFlowHeader;
+  states: EditorState[];
+  validation: EditorValidation;
+}
+
+export interface EditorFileEntry {
+  path: string;
+  root: string;
+  name: string;
+  description: string;
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  stateCount: number;
+  transitionCount: number;
+  updatedAt: string;
+}
+
+export interface EditorFilesResponse {
+  roots: string[];
+  files: EditorFileEntry[];
+}

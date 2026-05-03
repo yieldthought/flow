@@ -19,11 +19,21 @@ import uvicorn
 
 from .paths import logs_dir
 from .store import connect, daemon_status, enqueue_command, get_agent, init_db
+from .ui_editor import (
+    list_editor_files,
+    load_editor_document,
+    save_editor_document,
+    validate_editor_document,
+)
 from .ui_data import build_focus_snapshot, build_overview_snapshot
 
 
 class MoveBody(BaseModel):
     state: str
+
+
+class EditorDocumentBody(BaseModel):
+    document: dict[str, Any]
 
 
 @dataclass
@@ -97,6 +107,28 @@ def create_ui_app() -> FastAPI:
     @app.post("/api/agents/{agent_id}/move")
     def move_agent(agent_id: int, body: MoveBody) -> dict[str, Any]:
         return _queue_command(agent_id, "move", {"state": body.state})
+
+    @app.get("/api/editor/files")
+    def editor_files() -> dict[str, Any]:
+        return list_editor_files()
+
+    @app.get("/api/editor/file")
+    def editor_file(path: str) -> dict[str, Any]:
+        try:
+            return load_editor_document(path)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/editor/validate")
+    def editor_validate(body: EditorDocumentBody) -> dict[str, Any]:
+        return validate_editor_document(body.document)
+
+    @app.put("/api/editor/file")
+    def editor_save(body: EditorDocumentBody) -> dict[str, Any]:
+        try:
+            return save_editor_document(body.document)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return app
 

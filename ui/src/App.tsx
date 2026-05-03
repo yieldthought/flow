@@ -9,6 +9,7 @@ import { FlowEdge } from "./components/FlowEdge";
 import { EventStrip } from "./components/EventStrip";
 import { SelectedAgentHeader } from "./components/SelectedAgentHeader";
 import { TopStrip } from "./components/TopStrip";
+import { VisualEditorApp } from "./EditorApp";
 import { loadLaunchContext } from "./tauri";
 import type { LaunchContext, OverviewSnapshot } from "./types";
 
@@ -45,7 +46,11 @@ export default function App() {
   }
   return (
     <ReactFlowProvider>
-      <FlowApp flowName={context.flowName} apiBaseUrl={context.apiBaseUrl} />
+      {context.flowName ? (
+        <FlowApp flowName={context.flowName} apiBaseUrl={context.apiBaseUrl} />
+      ) : (
+        <VisualEditorApp apiBaseUrl={context.apiBaseUrl} />
+      )}
     </ReactFlowProvider>
   );
 }

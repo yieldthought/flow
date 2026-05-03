@@ -1,4 +1,4 @@
-import type { OverviewSnapshot } from "./types";
+import type { EditorDocument, EditorFilesResponse, EditorValidation, OverviewSnapshot } from "./types";
 
 export async function fetchOverview(apiBaseUrl: string, flowName: string): Promise<OverviewSnapshot> {
   const response = await fetch(`${apiBaseUrl}/api/flows/${encodeURIComponent(flowName)}`);
@@ -30,6 +30,49 @@ export async function postAction(
   if (!response.ok) {
     throw new Error(await errorText(response));
   }
+}
+
+export async function fetchEditorFiles(apiBaseUrl: string): Promise<EditorFilesResponse> {
+  const response = await fetch(`${apiBaseUrl}/api/editor/files`);
+  if (!response.ok) {
+    throw new Error(await errorText(response));
+  }
+  return (await response.json()) as EditorFilesResponse;
+}
+
+export async function fetchEditorDocument(apiBaseUrl: string, path: string): Promise<EditorDocument> {
+  const response = await fetch(`${apiBaseUrl}/api/editor/file?path=${encodeURIComponent(path)}`);
+  if (!response.ok) {
+    throw new Error(await errorText(response));
+  }
+  return (await response.json()) as EditorDocument;
+}
+
+export async function validateEditorDocument(
+  apiBaseUrl: string,
+  document: EditorDocument,
+): Promise<EditorValidation> {
+  const response = await fetch(`${apiBaseUrl}/api/editor/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document }),
+  });
+  if (!response.ok) {
+    throw new Error(await errorText(response));
+  }
+  return (await response.json()) as EditorValidation;
+}
+
+export async function saveEditorDocument(apiBaseUrl: string, document: EditorDocument): Promise<EditorDocument> {
+  const response = await fetch(`${apiBaseUrl}/api/editor/file`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document }),
+  });
+  if (!response.ok) {
+    throw new Error(await errorText(response));
+  }
+  return (await response.json()) as EditorDocument;
 }
 
 async function errorText(response: Response): Promise<string> {

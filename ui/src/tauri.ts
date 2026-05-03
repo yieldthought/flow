@@ -12,9 +12,10 @@ export async function loadLaunchContext(): Promise<LaunchContext> {
     return (await invoke("launch_context")) as LaunchContext;
   }
 
-  const flowName = import.meta.env.VITE_FLOW_UI_FLOW_NAME ?? "";
-  const apiBaseUrl = import.meta.env.VITE_FLOW_UI_API_BASE_URL ?? "";
-  if (flowName && apiBaseUrl) {
+  const params = new URLSearchParams(window.location.search);
+  const flowName = params.get("flow") ?? import.meta.env.VITE_FLOW_UI_FLOW_NAME ?? "";
+  const apiBaseUrl = params.get("api") ?? import.meta.env.VITE_FLOW_UI_API_BASE_URL ?? "";
+  if (apiBaseUrl) {
     return { flowName, apiBaseUrl };
   }
   throw new Error("Missing launch context");

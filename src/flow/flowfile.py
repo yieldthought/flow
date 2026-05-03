@@ -108,6 +108,10 @@ class CatalogResult:
 def load_flow(path: str | Path) -> FlowSpec:
     source = Path(path).expanduser().resolve()
     data = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    return flow_from_mapping(data, source_path=str(source))
+
+
+def flow_from_mapping(data: Any, *, source_path: str = "") -> FlowSpec:
     if not isinstance(data, dict):
         raise ValueError("flow file must contain a mapping at the top level")
     flow_block = data.get("flow")
@@ -156,7 +160,7 @@ def load_flow(path: str | Path) -> FlowSpec:
         fast=fast,
         args=args,
         states=states,
-        source_path=str(source),
+        source_path=source_path,
         placeholders=placeholders,
     )
 

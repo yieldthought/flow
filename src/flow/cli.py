@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     ui_parser = subparsers.add_parser("ui")
-    ui_parser.add_argument("flow_name")
+    ui_parser.add_argument("flow_name", nargs="?")
 
     for name in ("pause", "interrupt", "resume", "wake", "delete"):
         command = subparsers.add_parser(name)
@@ -512,9 +512,12 @@ def cmd_top(conn: Any, flow_name: str | None, *, recent: str = "1h") -> int:
     return run_top_mode(render_once, fitter=fit_top_dashboard, on_exit=lambda: _mark_list_seen(conn))
 
 
-def cmd_ui(conn: Any, flow_name: str) -> int:
-    rows = [dict(row) for row in list_agents(conn, flow_name)]
-    if not rows:
+def cmd_ui(conn: Any, flow_name: str | None) -> int:
+    if flow_name:
+        rows = [dict(row) for row in list_agents(conn, flow_name)]
+    else:
+        rows = []
+    if flow_name and not rows:
         print(f"error: unknown or inactive flow '{flow_name}'", file=sys.stderr)
         return 1
 
@@ -530,9 +533,9 @@ def cmd_ui(conn: Any, flow_name: str) -> int:
     handle = start_ui_server()
     env = dict(os.environ)
     env["FLOW_UI_API_BASE_URL"] = handle.url
-    env["FLOW_UI_FLOW_NAME"] = flow_name
+    env["FLOW_UI_FLOW_NAME"] = flow_name or ""
     env["VITE_FLOW_UI_API_BASE_URL"] = handle.url
-    env["VITE_FLOW_UI_FLOW_NAME"] = flow_name
+    env["VITE_FLOW_UI_FLOW_NAME"] = flow_name or ""
     cargo_bin = str(Path.home() / ".cargo" / "bin")
     if Path(cargo_bin).exists():
         env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"

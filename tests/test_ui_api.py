@@ -247,6 +247,99 @@ done:
     assert payload["flow"]["states"][0]["name"] == "check"
 
 
+def test_editor_api_lists_loads_validates_and_saves_flow_file(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_PATH", str(tmp_path))
+    flow_path = write_flow(
+        tmp_path / "demo.yaml",
+        """
+flow:
+  name: demo
+  description: Editable demo.
+
+check:
+  start: true
+  prompt: Check the thing.
+  transitions:
+    - if: it worked
+      go: success
+
+success:
+  end: true
+""".strip(),
+    )
+    client = TestClient(create_ui_app())
+
+    files_response = client.get("/api/editor/files")
+    assert files_response.status_code == 200
+    assert str(flow_path) in [item["path"] for item in files_response.json()["files"]]
+
+    load_response = client.get("/api/editor/file", params={"path": str(flow_path)})
+    assert load_response.status_code == 200
+    document = load_response.json()
+    assert document["flow"]["name"] == "demo"
+    assert document["states"][0]["prompt"] == "Check the thing."
+
+    document["states"][0]["prompt"] = "Check the thing carefully.\nRecord the result."
+    document["states"][0]["transitions"].append(
+        {"id": "transition-new", "condition": "it is blocked", "wait": "", "target": "blocked"}
+    )
+    document["states"].append(
+        {
+            "id": "state-new",
+            "name": "blocked",
+            "start": False,
+            "end": True,
+            "prompt": "Stop with a clear blocked outcome.",
+            "wait": "",
+            "mode": "",
+            "thinking": "",
+            "fast": None,
+            "transitions": [],
+        }
+    )
+
+    validate_response = client.post("/api/editor/validate", json={"document": document})
+    assert validate_response.status_code == 200
+    assert validate_response.json()["errors"] == []
+
+    save_response = client.put("/api/editor/file", json={"document": document})
+    assert save_response.status_code == 200
+    saved_flow = load_flow(flow_path)
+    assert saved_flow.states["check"].prompt == "Check the thing carefully.\nRecord the result."
+    assert "blocked" in saved_flow.states
+    assert any(transition.target == "blocked" for transition in saved_flow.states["check"].transitions)
+    assert "prompt: |" in flow_path.read_text(encoding="utf-8")
+
+
+def test_editor_api_rejects_saving_invalid_flow(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_PATH", str(tmp_path))
+    flow_path = write_flow(
+        tmp_path / "demo.yaml",
+        """
+flow:
+  name: demo
+
+check:
+  start: true
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    client = TestClient(create_ui_app())
+    document = client.get("/api/editor/file", params={"path": str(flow_path)}).json()
+    document["states"][0]["transitions"][0]["target"] = "missing"
+
+    validate_response = client.post("/api/editor/validate", json={"document": document})
+    assert validate_response.status_code == 200
+    assert "targets unknown state 'missing'" in "; ".join(validate_response.json()["errors"])
+
+    save_response = client.put("/api/editor/file", json={"document": document})
+    assert save_response.status_code == 409
+
+
 def test_build_overview_snapshot_filters_stale_runtime_diagnostics(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     conn = connect()

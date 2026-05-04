@@ -346,7 +346,7 @@ class CodexBackend(AgentBackend):
         self._run_tmux(["send-keys", "-t", target, "Enter"], check=False)
         self._run_tmux(["send-keys", "-t", target, "C-l"], check=False)
         baseline = self._capture_pane_text(target)
-        self._paste_text(target, self._launch_command(agent), baseline=baseline)
+        self._paste_text(target, self._launch_command(agent), baseline=baseline, bracketed=False)
         self._run_tmux(["send-keys", "-t", target, "Enter"])
 
     def _launch_command(self, agent: dict[str, Any]) -> str:
@@ -590,13 +590,13 @@ class CodexBackend(AgentBackend):
         self._paste_loaded_buffer(target)
         self._wait_for_paste_settle(target, baseline)
 
-    def _paste_text(self, target: str, text: str, *, baseline: str | None = None) -> None:
+    def _paste_text(self, target: str, text: str, *, baseline: str | None = None, bracketed: bool = True) -> None:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             handle.write(text)
             buffer_path = handle.name
         try:
             self._run_tmux(["load-buffer", buffer_path])
-            self._paste_loaded_buffer(target)
+            self._paste_loaded_buffer(target, bracketed=bracketed)
             if baseline is not None:
                 self._wait_for_paste_settle(target, baseline)
         finally:
@@ -605,11 +605,15 @@ class CodexBackend(AgentBackend):
             except FileNotFoundError:
                 pass
 
-    def _paste_loaded_buffer(self, target: str) -> None:
-        # Bracketed raw paste keeps multiline prompts as one paste event; plain
-        # tmux paste turns newlines into Enter keypresses that Codex may treat
-        # as paste content instead of prompt submission.
-        self._run_tmux(["paste-buffer", "-d", "-p", "-r", "-t", target])
+    def _paste_loaded_buffer(self, target: str, *, bracketed: bool = True) -> None:
+        # Bracketed raw paste keeps multiline prompts as one paste event inside
+        # Codex. Shell launch commands must avoid bracket control codes because
+        # some shells/readline configurations accept the visible bytes literally
+        # and corrupt the command as "00~...".
+        args = ["paste-buffer", "-d", "-r", "-t", target]
+        if bracketed:
+            args.insert(2, "-p")
+        self._run_tmux(args)
 
     def _submit_prompt(self, target: str) -> None:
         self._run_tmux(["send-keys", "-t", target, "Enter"])

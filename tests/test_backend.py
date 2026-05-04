@@ -502,7 +502,8 @@ def test_launch_codex_pastes_command_before_enter(monkeypatch: object) -> None:
         ["send-keys", "-t", "flow-agent-9:0.0", "C-l"],
     ]
     assert loaded_buffers == [command]
-    assert ["paste-buffer", "-d", "-p", "-r", "-t", "flow-agent-9:0.0"] in calls
+    assert ["paste-buffer", "-d", "-r", "-t", "flow-agent-9:0.0"] in calls
+    assert ["paste-buffer", "-d", "-p", "-r", "-t", "flow-agent-9:0.0"] not in calls
     assert calls[-1] == ["send-keys", "-t", "flow-agent-9:0.0", "Enter"]
     assert all(command not in call for call in calls if call[:1] == ["send-keys"])
     assert settled == [("flow-agent-9:0.0", "flow-agent-9:0.0 shell prompt")]

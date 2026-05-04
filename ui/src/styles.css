@@ -347,6 +347,7 @@ select {
   display: grid;
   align-content: start;
   gap: 10px;
+  position: relative;
 }
 
 .state-node--focus {
@@ -743,6 +744,516 @@ select {
   right: auto;
   bottom: 22px;
   background: rgba(110, 41, 52, 0.92);
+}
+
+/* Runtime monitor UI: keep it visually aligned with the editor shell. */
+.app-shell--runtime {
+  padding: 0;
+  gap: 0;
+  grid-template-columns: 292px minmax(0, 1fr);
+  grid-template-rows: 1fr;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 24%),
+    linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+  color: var(--text);
+}
+
+.app-shell--runtime .top-strip {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto auto 1fr;
+  align-content: start;
+  gap: 12px;
+  padding: 14px 12px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  box-shadow: none;
+  backdrop-filter: blur(22px) saturate(1.2);
+}
+
+.app-shell--runtime .top-strip__group {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  align-items: start;
+}
+
+.app-shell--runtime .top-strip__group--identity {
+  padding: 2px 0 4px;
+}
+
+.app-shell--runtime .top-strip__group--metrics {
+  align-content: start;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.app-shell--runtime .top-strip__identity {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.app-shell--runtime .top-strip__title {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.app-shell--runtime .top-strip__description {
+  max-width: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.38;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.app-shell--runtime .summary-pill {
+  width: 100%;
+  min-height: 31px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 9px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--panel-soft) 76%, transparent);
+  color: var(--text-soft);
+}
+
+.app-shell--runtime .diagnostic-banner {
+  grid-column: auto;
+  border-radius: 10px;
+  align-items: start;
+  line-height: 1.35;
+}
+
+.app-shell--runtime .flow-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.app-shell--runtime .selected-header {
+  grid-row: 1;
+  grid-column: 1;
+  min-width: 0;
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  box-shadow: none;
+  backdrop-filter: blur(20px) saturate(1.2);
+}
+
+.app-shell--runtime .selected-header__meta,
+.app-shell--runtime .selected-header__identity {
+  min-width: 0;
+}
+
+.app-shell--runtime .selected-header__meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-shell--runtime .selected-header__meta > .ghost-button {
+  flex: none;
+}
+
+.app-shell--runtime .selected-header__identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-shell--runtime .selected-header__details {
+  min-width: 0;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.app-shell--runtime .selected-header__details > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell--runtime .selected-header__actions {
+  align-items: center;
+  gap: 8px;
+}
+
+.app-shell--runtime .ghost-button,
+.app-shell--runtime .action-button,
+.app-shell--runtime .move-controls select,
+.app-shell--runtime .toast button {
+  min-height: 32px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.app-shell--runtime .ghost-button,
+.app-shell--runtime .action-button,
+.app-shell--runtime .toast button {
+  padding: 6px 12px;
+}
+
+.app-shell--runtime .ghost-button:hover,
+.app-shell--runtime .action-button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--panel-soft) 86%, var(--accent));
+}
+
+.app-shell--runtime .action-button--danger {
+  color: #f09ca7;
+  background: rgba(125, 47, 59, 0.18);
+  border-color: rgba(224, 104, 119, 0.22);
+}
+
+.app-shell--runtime .flow-canvas {
+  grid-row: 2;
+  grid-column: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: var(--canvas);
+}
+
+.app-shell--runtime .flow-canvas .react-flow__pane {
+  cursor: grab;
+}
+
+.app-shell--runtime .flow-canvas .react-flow__pane:active {
+  cursor: grabbing;
+}
+
+.app-shell--runtime .flow-canvas .react-flow__controls {
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: var(--shadow-soft);
+}
+
+.app-shell--runtime .flow-canvas .react-flow__controls-button {
+  color: var(--text-soft);
+}
+
+.app-shell--runtime .flow-canvas .react-flow__node {
+  pointer-events: all;
+}
+
+.state-node {
+  --state-line-color: hsl(var(--state-hue, 210) 62% 72%);
+  --state-wash: hsl(var(--state-hue, 210) 70% 54% / 0.12);
+  width: 336px;
+}
+
+.state-node--focus {
+  width: 344px;
+}
+
+.state-node__body,
+.pause-drop {
+  border-radius: 12px;
+  border-color: color-mix(in srgb, var(--state-line-color) 30%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--state-wash) 42%, transparent), transparent 54%),
+    var(--panel-strong);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--state-line-color) 8%, transparent),
+    var(--shadow-soft);
+}
+
+.state-node__body {
+  padding: 14px;
+  gap: 11px;
+}
+
+.state-node__body--overview {
+  min-height: 158px;
+  max-height: 336px;
+}
+
+.state-node--current .state-node__body {
+  border-color: color-mix(in srgb, var(--state-line-color) 62%, var(--editor-line-active));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--state-line-color) 22%, transparent),
+    var(--shadow-soft);
+}
+
+.state-node--ghost .state-node__body {
+  box-shadow: none;
+}
+
+.state-node__title {
+  color: color-mix(in srgb, var(--state-line-color) 38%, var(--text));
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.state-node .flow-handle {
+  width: 10px;
+  height: 10px;
+  background: var(--state-line-color);
+  border: 2px solid var(--panel-strong);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--state-line-color) 18%, transparent);
+}
+
+.state-shelf__label,
+.event-strip__label,
+.history-popover__title {
+  letter-spacing: 0.12em;
+}
+
+.agent-pill {
+  min-height: 34px;
+  border-radius: 8px;
+  padding: 7px 9px;
+  color: var(--text);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--state-line-color, var(--editor-line)) 10%, transparent), transparent 70%),
+    var(--panel-muted);
+}
+
+.agent-pill--header {
+  max-width: 420px;
+  flex: none;
+}
+
+.agent-pill__args {
+  color: var(--text-soft);
+}
+
+.agent-pill__timer {
+  color: var(--text-muted);
+}
+
+.agent-pill--working {
+  background:
+    linear-gradient(90deg, rgba(147, 188, 255, 0.12), transparent 72%),
+    var(--working-bg);
+}
+
+.agent-pill--waiting,
+.agent-pill--finished {
+  color: var(--text-soft);
+}
+
+.focus-summary,
+.pause-drop {
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel-muted) 78%, transparent);
+  border-color: color-mix(in srgb, var(--state-line-color) 26%, var(--border));
+}
+
+.history-popover {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-strong) 94%, #000);
+}
+
+.runtime-edge__path {
+  --edge-line-color: hsl(var(--edge-hue, 210) 62% 70%);
+  stroke: var(--edge-line-color);
+}
+
+.runtime-edge__path--quiet {
+  opacity: 0.42;
+}
+
+.runtime-edge__path--visited {
+  opacity: 0.86;
+}
+
+.runtime-edge__path--active {
+  stroke: color-mix(in srgb, var(--edge-line-color) 78%, var(--text));
+  opacity: 1;
+}
+
+.edge-marker,
+.edge-badge {
+  --edge-line-color: hsl(var(--edge-hue, 210) 62% 70%);
+}
+
+.edge-marker {
+  width: 15px;
+  height: 15px;
+  color: var(--edge-line-color);
+  opacity: 0.82;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.24));
+}
+
+.edge-marker--active {
+  color: color-mix(in srgb, var(--edge-line-color) 78%, var(--text));
+  opacity: 1;
+}
+
+.edge-marker__triangle {
+  width: 15px;
+  height: 15px;
+}
+
+.edge-badge {
+  position: relative;
+  max-width: 220px;
+  min-width: 42px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--edge-line-color) 40%, var(--border-strong));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--canvas) 78%, var(--panel-strong));
+  color: var(--text-soft);
+  box-shadow: none;
+  font-size: 10px;
+}
+
+.edge-badge--active {
+  border-color: color-mix(in srgb, var(--edge-line-color) 62%, var(--border));
+  color: var(--text);
+}
+
+.edge-badge__summary {
+  color: inherit;
+}
+
+.history-popover--edge::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -12px;
+  height: 12px;
+}
+
+.agent-hover-popover {
+  position: absolute;
+  z-index: 30;
+  left: 8px;
+  right: 8px;
+  top: calc(100% + 8px);
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--state-line-color) 30%, var(--border-strong));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-strong) 96%, #000);
+  color: var(--text-soft);
+  box-shadow: var(--shadow-soft);
+  pointer-events: none;
+}
+
+.agent-hover-popover__title {
+  margin-bottom: 6px;
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.agent-hover-popover__message {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.event-strip {
+  grid-row: 3;
+  grid-column: 1;
+  min-width: 0;
+  min-height: 132px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  padding: 12px 14px 14px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: blur(20px) saturate(1.12);
+}
+
+.event-card {
+  min-width: 300px;
+  max-width: 300px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-soft) 78%, transparent);
+}
+
+.event-card--active {
+  border-color: color-mix(in srgb, var(--editor-line-active) 40%, var(--border));
+  background: color-mix(in srgb, var(--panel-soft) 90%, var(--accent));
+}
+
+.toast,
+.error-banner {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-strong) 96%, #000);
+}
+
+@media (prefers-color-scheme: light) {
+  .state-node {
+    --state-line-color: hsl(var(--state-hue, 210) 58% 42%);
+    --state-wash: hsl(var(--state-hue, 210) 70% 52% / 0.08);
+  }
+
+  .runtime-edge__path,
+  .edge-marker,
+  .edge-badge {
+    --edge-line-color: hsl(var(--edge-hue, 210) 58% 42%);
+  }
+
+  .app-shell--runtime .action-button--danger {
+    color: #9c3346;
+    background: rgba(255, 233, 237, 0.82);
+  }
+
+  .diagnostic-banner--warning {
+    color: #7a520d;
+    background: rgba(255, 239, 209, 0.88);
+  }
+
+  .diagnostic-banner--error {
+    color: #8f263a;
+    background: rgba(255, 232, 237, 0.92);
+  }
+
+  .history-popover,
+  .toast,
+  .error-banner {
+    background: var(--panel-strong);
+  }
+}
+
+@media (max-width: 1180px) {
+  .app-shell--runtime {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+
+  .app-shell--runtime .selected-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell--runtime .selected-header__actions {
+    justify-content: flex-start;
+  }
 }
 
 .editor-shell {

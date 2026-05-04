@@ -80,6 +80,15 @@ done:
     waiting_id = create_runtime_agent(conn, flow_path, {"site": "reddit.com/r/locallama"})
     paused_id = create_runtime_agent(conn, flow_path, {"site": "https://karpathy.github.io"})
 
+    record_agent_event(
+        conn,
+        working_id,
+        "decision",
+        from_state="check",
+        to_state="done",
+        choice="done",
+        reason="Found a useful update",
+    )
     update_agent(conn, waiting_id, ready_at="2030-01-01T00:10:00Z", phase="waiting")
     update_agent(conn, paused_id, substate="interaction", phase="paused")
 
@@ -100,6 +109,7 @@ done:
     assert waiting_rows[0]["display_args"] == {"site": "reddit.com/r/locallama"}
     assert working_rows[0]["id"] == working_id
     assert working_rows[0]["display_args"] == {}
+    assert working_rows[0]["latest_message"] == "Found a useful update"
     assert paused_rows[0]["id"] == paused_id
     edge = next(item for item in snapshot["flow"]["edges"] if item["key"] == "check->done")
     assert edge["transition_label_text"] == ""

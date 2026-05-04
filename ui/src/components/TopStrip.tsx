@@ -8,14 +8,14 @@ export function TopStrip({ snapshot }: { snapshot: OverviewSnapshot }) {
 
   return (
     <header className="top-strip">
-      <div className="top-strip__group">
+      <div className="top-strip__group top-strip__group--identity">
         <div className="eyebrow">flow</div>
         <div className="top-strip__identity">
           <div className="top-strip__title">{flow.name}</div>
           {description ? <div className="top-strip__description">{description}</div> : null}
         </div>
       </div>
-      <div className="top-strip__group">
+      <div className="top-strip__group top-strip__group--metrics">
         <StatusPill tone={runtime.active ? "ok" : "error"} label={runtime.active ? "runtime active" : "runtime shut down"} />
         <InfoPill label={`uptime ${formatCompactDuration(runtime.uptime_seconds)}`} />
         <InfoPill label={`working ${flow.counts.working}`} tone="info" />

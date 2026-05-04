@@ -20,7 +20,7 @@ describe("format helpers", () => {
         total_duration_text: "0h 18m",
         visits: [],
       }),
-    ).toBe("x4 latest 0h 2m total 0h 18m");
+    ).toBe("0h 18m (4 visits)");
 
     expect(
       edgeSummaryText({

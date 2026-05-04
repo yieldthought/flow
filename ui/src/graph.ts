@@ -36,17 +36,17 @@ export type GraphEdgeData = Record<string, unknown> & {
   onPinKey?: (key: string | null) => void;
 };
 
-const OVERVIEW_NODE_WIDTH = 288;
-const FOCUS_NODE_WIDTH = 304;
-const OVERVIEW_MIN_BODY_HEIGHT = 146;
-const FOCUS_NODE_HEIGHT = 232;
+const OVERVIEW_NODE_WIDTH = 336;
+const FOCUS_NODE_WIDTH = 344;
+const OVERVIEW_MIN_BODY_HEIGHT = 158;
+const FOCUS_NODE_HEIGHT = 236;
 const BODY_ROW_HEIGHT = 54;
 const SHELF_ROW_HEIGHT = 46;
 const SHELF_LABEL_HEIGHT = 18;
 const SHELF_PADDING = 10;
 const SECTION_GAP = 10;
 const MAX_VISIBLE_ROWS = 3;
-const COLUMN_GAP = 72;
+const COLUMN_GAP = 100;
 type NodeLayout = {
   x: number;
   y: number;
@@ -68,10 +68,10 @@ export function buildGraphModel(snapshot: OverviewSnapshot): {
   graph.setDefaultEdgeLabel(() => ({}));
   graph.setGraph({
     rankdir: "LR",
-    nodesep: 88,
-    ranksep: 124,
-    marginx: 48,
-    marginy: 48,
+    nodesep: 118,
+    ranksep: 176,
+    marginx: 72,
+    marginy: 72,
   });
 
   const nodeLayouts = new Map<string, NodeLayout>();
@@ -114,7 +114,7 @@ export function buildGraphModel(snapshot: OverviewSnapshot): {
         currentStateName: snapshot.focus?.agent.current_state,
       },
       draggable: false,
-      selectable: false,
+      selectable: true,
     };
   });
 

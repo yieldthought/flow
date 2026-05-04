@@ -271,6 +271,7 @@ def _agent_row(conn: Any, agent: dict[str, Any], snapshot_flow: FlowSpec) -> dic
         "cwd": str(agent["cwd"]),
         "ready_at": str(agent.get("ready_at") or ""),
         "ended_at": str(agent.get("ended_at") or ""),
+        "latest_message": _latest_agent_message(conn, agent),
     }
 
 
@@ -309,6 +310,22 @@ def _agent_status(conn: Any, agent: dict[str, Any]) -> AgentStatus:
     if ready_at is not None and ready_at > utc_now():
         return AgentStatus("waiting", max(0.0, (ready_at - utc_now()).total_seconds()))
     return AgentStatus("working", state_active_seconds(conn, int(agent["id"]), str(agent["current_state"])))
+
+
+def _latest_agent_message(conn: Any, agent: dict[str, Any]) -> str:
+    row = conn.execute(
+        "SELECT * FROM agent_events WHERE agent_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (int(agent["id"]),),
+    ).fetchone()
+    if row is not None:
+        event = dict(row)
+        reason = str(event.get("reason") or "").strip()
+        if reason:
+            return reason
+        text, _link = _event_line(event)
+        if text.strip():
+            return text.strip()
+    return str(agent.get("status_message") or "").strip()
 
 
 def _state_visit_summaries(conn: Any, agent: dict[str, Any]) -> dict[str, dict[str, Any]]:

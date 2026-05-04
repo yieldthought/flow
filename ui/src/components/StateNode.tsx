@@ -1,10 +1,17 @@
+import { useState, type CSSProperties } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 
+import { stateHue } from "../color";
 import { formatArgs, formatCompactDuration, formatCountdown, stateSummaryText, truncate } from "../format";
 import type { AgentRow } from "../types";
 import type { GraphStateNodeData } from "../graph";
 
+type StateHueStyle = CSSProperties & {
+  "--state-hue"?: number;
+};
+
 export function StateNode({ data }: NodeProps<Node<GraphStateNodeData>>) {
+  const [hoveredAgent, setHoveredAgent] = useState<AgentRow | null>(null);
   const state = data.state;
   const mode = data.mode;
   const focusSummary = state.focus;
@@ -23,6 +30,10 @@ export function StateNode({ data }: NodeProps<Node<GraphStateNodeData>>) {
   return (
     <div
       className={stateNodeClassName(mode, visited, current)}
+      style={{ "--state-hue": stateHue(state.name) } as StateHueStyle}
+      onMouseLeave={() => {
+        setHoveredAgent(null);
+      }}
       onDragOver={(event) => {
         if (mode !== "focus" || !data.dragAgentId) {
           return;
@@ -40,7 +51,13 @@ export function StateNode({ data }: NodeProps<Node<GraphStateNodeData>>) {
     >
       {mode === "overview" ? (
         <>
-          <Shelf title="Waiting" tone="waiting" rows={state.rows.waiting} onSelectAgent={data.onSelectAgent} />
+          <Shelf
+            title="Waiting"
+            tone="waiting"
+            rows={state.rows.waiting}
+            onSelectAgent={data.onSelectAgent}
+            onHoverAgent={setHoveredAgent}
+          />
           <div
             className={[
               "state-node__body",
@@ -55,11 +72,24 @@ export function StateNode({ data }: NodeProps<Node<GraphStateNodeData>>) {
           >
             <Handle type="target" position={Position.Left} className="flow-handle" />
             <StateTitle name={state.name} start={state.start} end={state.end} />
-            <RowList rows={bodyRows} onSelectAgent={data.onSelectAgent} />
+            <RowList rows={bodyRows} onSelectAgent={data.onSelectAgent} onHoverAgent={setHoveredAgent} />
             <Handle type="source" position={Position.Right} className="flow-handle" />
           </div>
-          <Shelf title="Paused" tone="paused" rows={state.rows.paused} onSelectAgent={data.onSelectAgent} />
-          <Shelf title="Needs Help" tone="needs-help" rows={state.rows.needs_help} onSelectAgent={data.onSelectAgent} />
+          <Shelf
+            title="Paused"
+            tone="paused"
+            rows={state.rows.paused}
+            onSelectAgent={data.onSelectAgent}
+            onHoverAgent={setHoveredAgent}
+          />
+          <Shelf
+            title="Needs Help"
+            tone="needs-help"
+            rows={state.rows.needs_help}
+            onSelectAgent={data.onSelectAgent}
+            onHoverAgent={setHoveredAgent}
+          />
+          {hoveredAgent ? <AgentHoverPopover row={hoveredAgent} /> : null}
         </>
       ) : (
         <>
@@ -153,11 +183,13 @@ function Shelf({
   tone,
   rows,
   onSelectAgent,
+  onHoverAgent,
 }: {
   title: string;
   tone: "waiting" | "paused" | "needs-help";
   rows: AgentRow[];
   onSelectAgent?: (agentId: number) => void;
+  onHoverAgent?: (row: AgentRow) => void;
 }) {
   if (rows.length === 0) {
     return null;
@@ -165,7 +197,7 @@ function Shelf({
   return (
     <div className={`state-shelf state-shelf--${tone}`}>
       <div className="state-shelf__label">{title}</div>
-      <RowList rows={rows} tone={tone} onSelectAgent={onSelectAgent} />
+      <RowList rows={rows} tone={tone} onSelectAgent={onSelectAgent} onHoverAgent={onHoverAgent} />
     </div>
   );
 }
@@ -174,10 +206,12 @@ function RowList({
   rows,
   tone,
   onSelectAgent,
+  onHoverAgent,
 }: {
   rows: AgentRow[];
   tone?: "waiting" | "working" | "paused" | "needs-help";
   onSelectAgent?: (agentId: number) => void;
+  onHoverAgent?: (row: AgentRow) => void;
 }) {
   if (rows.length === 0) {
     return <div className="row-list row-list--empty"> </div>;
@@ -189,6 +223,7 @@ function RowList({
           key={row.id}
           className={`agent-pill agent-pill--${pillTone(row, tone)}`}
           type="button"
+          onMouseEnter={() => onHoverAgent?.(row)}
           onClick={() => onSelectAgent?.(row.id)}
         >
           <span className="agent-pill__id">#{row.id}</span>
@@ -210,4 +245,14 @@ function pillTone(row: AgentRow, tone?: "waiting" | "working" | "paused" | "need
     return "needs-help";
   }
   return row.status;
+}
+
+function AgentHoverPopover({ row }: { row: AgentRow }) {
+  const message = row.latest_message?.trim() || "No agent message yet.";
+  return (
+    <div className="agent-hover-popover">
+      <div className="agent-hover-popover__title">Latest from #{row.id}</div>
+      <div className="agent-hover-popover__message">{truncate(message, 220)}</div>
+    </div>
+  );
 }

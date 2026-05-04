@@ -1,15 +1,9 @@
 import type { LaunchContext } from "./types";
 
-declare global {
-  interface Window {
-    __TAURI__?: unknown;
-  }
-}
-
 export async function loadLaunchContext(): Promise<LaunchContext> {
-  if (typeof window !== "undefined" && window.__TAURI__) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return (await invoke("launch_context")) as LaunchContext;
+  const tauriContext = await loadTauriLaunchContext();
+  if (tauriContext?.apiBaseUrl) {
+    return tauriContext;
   }
 
   const params = new URLSearchParams(window.location.search);
@@ -19,4 +13,16 @@ export async function loadLaunchContext(): Promise<LaunchContext> {
     return { flowName, apiBaseUrl };
   }
   throw new Error("Missing launch context");
+}
+
+async function loadTauriLaunchContext(): Promise<LaunchContext | null> {
+  try {
+    const { invoke, isTauri } = await import("@tauri-apps/api/core");
+    if (!isTauri()) {
+      return null;
+    }
+    return await invoke<LaunchContext>("launch_context");
+  } catch {
+    return null;
+  }
 }

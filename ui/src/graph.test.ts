@@ -36,6 +36,7 @@ function makeSnapshot(): OverviewSnapshot {
                 cwd: "/tmp/work",
                 ready_at: "",
                 ended_at: "",
+                latest_message: "Waiting for news",
               },
             ],
             working: [],

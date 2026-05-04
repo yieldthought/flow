@@ -1,4 +1,14 @@
-import { Background, Controls, ReactFlow, ReactFlowProvider, type Edge, type EdgeTypes, type Node, type NodeTypes } from "@xyflow/react";
+import {
+  Background,
+  Controls,
+  PanOnScrollMode,
+  ReactFlow,
+  ReactFlowProvider,
+  type Edge,
+  type EdgeTypes,
+  type Node,
+  type NodeTypes,
+} from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { startTransition, useEffect, useState } from "react";
 
@@ -159,6 +169,12 @@ export function FlowApp({ flowName, apiBaseUrl }: LaunchContext) {
     }
   }
 
+  function backToOverview() {
+    setSelectedAgentId(null);
+    setPinnedKey(null);
+    setHoveredKey(null);
+  }
+
   if (error && !snapshot) {
     return <div className="app-error">{error}</div>;
   }
@@ -183,9 +199,7 @@ export function FlowApp({ flowName, apiBaseUrl }: LaunchContext) {
         });
       },
       onBackToOverview: () => {
-        setSelectedAgentId(null);
-        setPinnedKey(null);
-        setHoveredKey(null);
+        backToOverview();
       },
       onMoveAgent: (stateName: string) => {
         void runAction("move", { state: stateName });
@@ -210,7 +224,7 @@ export function FlowApp({ flowName, apiBaseUrl }: LaunchContext) {
   }));
 
   return (
-    <div className="app-shell">
+    <div className="app-shell app-shell--runtime">
       <TopStrip snapshot={snapshot} />
       <main className="flow-panel">
         {snapshot.focus ? (
@@ -228,11 +242,12 @@ export function FlowApp({ flowName, apiBaseUrl }: LaunchContext) {
             }}
             onDragStart={setDragAgentId}
             onDragEnd={() => setDragAgentId(null)}
-            onBack={() => setSelectedAgentId(null)}
+            onBack={backToOverview}
           />
         ) : null}
         <div className="flow-canvas">
           <ReactFlow<Node, Edge>
+            key={selectedAgentId === null ? `overview:${flowName}` : `focus:${selectedAgentId}`}
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
@@ -240,14 +255,22 @@ export function FlowApp({ flowName, apiBaseUrl }: LaunchContext) {
             fitView
             fitViewOptions={{ padding: 0.14 }}
             panOnScroll
-            panOnDrag={false}
-            minZoom={0.45}
-            maxZoom={1.5}
+            panOnScrollMode={PanOnScrollMode.Free}
+            panOnDrag
+            zoomOnPinch
+            zoomOnScroll={false}
+            minZoom={0.18}
+            maxZoom={1.8}
             nodesDraggable={false}
             elementsSelectable={false}
+            onPaneClick={() => {
+              if (selectedAgentId !== null) {
+                backToOverview();
+              }
+            }}
             proOptions={{ hideAttribution: true }}
           >
-            <Background color="rgba(104, 113, 134, 0.18)" size={1.25} gap={24} />
+            <Background color="var(--canvas-grid)" size={1.2} gap={28} />
             <Controls position="bottom-left" showInteractive={false} />
           </ReactFlow>
         </div>

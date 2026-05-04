@@ -53,7 +53,8 @@ export function stateSummaryText(summary: FocusStateSummary | null | undefined):
   if (!summary || summary.count === 0) {
     return "";
   }
-  return `x${summary.count} latest ${summary.latest_duration_text} total ${summary.total_duration_text}`;
+  const label = summary.count === 1 ? "visit" : "visits";
+  return `${summary.total_duration_text} (${summary.count} ${label})`;
 }
 
 export function eventCardTitle(event: FocusEvent): string {

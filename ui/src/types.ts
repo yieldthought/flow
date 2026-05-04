@@ -12,6 +12,7 @@ export interface AgentRow {
   cwd: string;
   ready_at: string;
   ended_at: string;
+  latest_message: string;
 }
 
 export interface StateRows {

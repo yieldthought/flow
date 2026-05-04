@@ -1,6 +1,7 @@
 import dagre from "dagre";
 import type { Edge, Node } from "@xyflow/react";
 
+import { stateHue } from "./color";
 import type { EditorDocument, EditorState, EditorTransition } from "./types";
 
 export type EditorSelection =
@@ -120,13 +121,7 @@ export function editorOverflowHandleId(stateId: string): string {
 }
 
 export function editorStateHue(name: string): number {
-  const normalized = name.trim().toLowerCase() || "state";
-  let hash = 2166136261;
-  for (let index = 0; index < normalized.length; index += 1) {
-    hash ^= normalized.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0) % 360;
+  return stateHue(name);
 }
 
 export function buildEditorGraphModel({

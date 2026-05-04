@@ -1,7 +1,13 @@
+import type { CSSProperties } from "react";
 import { BaseEdge, EdgeLabelRenderer, type Edge, type EdgeProps } from "@xyflow/react";
 
+import { stateHue } from "../color";
 import { edgeSummaryText, edgeTransitionText, truncate } from "../format";
 import type { GraphEdgeData } from "../graph";
+
+type EdgeHueStyle = CSSProperties & {
+  "--edge-hue"?: number;
+};
 
 export function FlowEdge({
   id,
@@ -15,6 +21,8 @@ export function FlowEdge({
   const focus = typed?.edge.focus ?? null;
   const visited = !!focus;
   const edgeKey = typed?.edge.key ?? id;
+  const active = edgeKey === typed?.hoveredKey || edgeKey === typed?.pinnedKey;
+  const edgeHue = stateHue(typed?.edge.target ?? typed?.edge.source ?? "state");
   const transitionText = edgeTransitionText(typed?.edge.transition_labels, typed?.edge.transition_label_text ?? "");
   const waitText = bubbleWaitText(transitionText);
   const route = buildRoute({
@@ -31,24 +39,34 @@ export function FlowEdge({
       <BaseEdge
         id={id}
         path={route.path}
-        style={{ stroke: visited ? "#87c3ff" : "#8fa0b8", strokeWidth: visited ? 1.8 : 1.1 }}
+        className={[
+          "runtime-edge__path",
+          visited ? "runtime-edge__path--visited" : "runtime-edge__path--quiet",
+          active ? "runtime-edge__path--active" : "",
+        ].join(" ")}
+        style={{
+          "--edge-hue": edgeHue,
+          strokeWidth: active ? 2.5 : visited ? 1.9 : 1.25,
+        } as EdgeHueStyle}
       />
       <EdgeLabelRenderer>
         {waitText ? (
           <div
             className="edge-badge edge-badge--wait"
             style={{
+              "--edge-hue": edgeHue,
               transform: `translate(-50%, -100%) translate(${route.labelX}px, ${route.labelY - 10}px)`,
-            }}
+            } as EdgeHueStyle}
           >
             {truncate(waitText, 32)}
           </div>
         ) : null}
         <div
-          className="edge-marker"
+          className={["edge-marker", active ? "edge-marker--active" : ""].join(" ")}
           style={{
+            "--edge-hue": edgeHue,
             transform: `translate(-50%, -50%) translate(${route.labelX}px, ${route.labelY}px) rotate(${route.labelAngle}deg)`,
-          }}
+          } as EdgeHueStyle}
           aria-hidden="true"
         >
           <svg className="edge-marker__triangle" viewBox="0 0 10 10">
@@ -57,10 +75,11 @@ export function FlowEdge({
         </div>
         {typed?.mode === "focus" && focus ? (
           <div
-            className="edge-badge edge-badge--summary"
+            className={["edge-badge", "edge-badge--summary", active ? "edge-badge--active" : ""].join(" ")}
             style={{
+              "--edge-hue": edgeHue,
               transform: `translate(-50%, 0) translate(${route.labelX}px, ${route.labelY + 10}px)`,
-            }}
+            } as EdgeHueStyle}
             onMouseEnter={() => {
               typed?.onHoverKey?.(edgeKey);
             }}

@@ -104,6 +104,56 @@ export interface FlowCounts {
   needs_help: number;
 }
 
+export interface RuntimeTopAgent extends AgentRow {
+  flow_name: string;
+  current_state: string;
+  source_path: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RuntimeFlowSummary {
+  name: string;
+  description: string;
+  path: string;
+  counts: FlowCounts;
+  active_count: number;
+  recent_count: number;
+  agents: RuntimeTopAgent[];
+}
+
+export interface RuntimeTopEvent {
+  id: number;
+  agent_id: number;
+  flow_name: string;
+  state_name: string;
+  current_state: string;
+  kind: string;
+  created_at: string;
+  absolute_time_text: string;
+  text: string;
+  link: { type: "state" | "edge"; key: string } | null;
+}
+
+export interface RuntimeTopSummary {
+  active_agents: number;
+  recent_agents: number;
+  total_agents: number;
+  cumulative_agent_seconds: number;
+}
+
+export interface RuntimeTopSnapshot {
+  runtime: RuntimeSummary;
+  summary?: RuntimeTopSummary;
+  recent: {
+    window: string;
+    cutoff: string;
+    seconds: number;
+  };
+  flows: RuntimeFlowSummary[];
+  events: RuntimeTopEvent[];
+}
+
 export interface FocusAgent {
   id: number;
   flow_name: string;

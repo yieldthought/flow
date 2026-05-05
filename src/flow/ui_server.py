@@ -25,7 +25,7 @@ from .ui_editor import (
     save_editor_document,
     validate_editor_document,
 )
-from .ui_data import build_focus_snapshot, build_overview_snapshot
+from .ui_data import build_focus_snapshot, build_overview_snapshot, build_runtime_top_snapshot
 
 
 class MoveBody(BaseModel):
@@ -74,6 +74,15 @@ def create_ui_app() -> FastAPI:
                 return build_overview_snapshot(conn, flow_name)
             except ValueError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/runtime/top")
+    def runtime_top(recent: str = "1h") -> dict[str, Any]:
+        with contextlib.closing(connect()) as conn:
+            init_db(conn)
+            try:
+                return build_runtime_top_snapshot(conn, recent=recent)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/flows/{flow_name}/agents/{agent_id}")
     def flow_focus(flow_name: str, agent_id: int) -> dict[str, Any]:

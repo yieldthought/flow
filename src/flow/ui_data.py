@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
-from .common import duration_seconds, format_utc, normalize_phase, parse_utc, utc_now
-from .flowfile import FlowSpec, flow_from_dict
+from .common import duration_seconds, format_utc, normalize_phase, parse_utc, parse_wait_seconds, utc_now
+from .flowfile import FlowSpec, discover_catalog, flow_from_dict, load_flow
 from .store import (
+    active_agent_count,
+    cumulative_agent_seconds,
     daemon_exit_info,
     daemon_status,
     get_agent,
@@ -18,7 +21,10 @@ from .store import (
     list_agents,
     list_daemon_events,
     list_error_events,
+    list_top_agent_events,
+    list_top_agents,
     state_active_seconds,
+    total_agent_count,
     total_active_seconds,
 )
 
@@ -31,10 +37,14 @@ class AgentStatus:
 
 def build_overview_snapshot(conn: Any, flow_name: str) -> dict[str, Any]:
     agents = [dict(row) for row in list_agents(conn, flow_name)]
-    if not agents:
+    snapshots = _snapshot_flows(conn, agents)
+    if not snapshots:
+        catalog_flow = _catalog_flow_by_name(flow_name)
+        if catalog_flow is not None:
+            snapshots[-1] = catalog_flow
+    if not snapshots:
         raise ValueError(f"unknown or inactive flow '{flow_name}'")
 
-    snapshots = _snapshot_flows(conn, agents)
     flow_description = _merged_flow_description(snapshots)
     topology = _merged_topology(agents, snapshots)
     state_rows: dict[str, dict[str, list[dict[str, Any]]]] = {
@@ -71,6 +81,55 @@ def build_overview_snapshot(conn: Any, flow_name: str) -> dict[str, Any]:
             ],
             "edges": topology["edges"],
         },
+    }
+
+
+def build_runtime_top_snapshot(conn: Any, *, recent: str = "1h", event_limit: int | None = 500) -> dict[str, Any]:
+    recent_seconds = parse_wait_seconds(recent)
+    cutoff = format_utc(utc_now() - timedelta(seconds=recent_seconds))
+    agents = [dict(row) for row in list_top_agents(conn, ended_after=cutoff)]
+    events = [dict(row) for row in list_top_agent_events(conn, ended_after=cutoff, limit=event_limit)]
+    snapshots = _snapshot_flows(conn, agents)
+    flows: dict[str, dict[str, Any]] = {}
+
+    for agent in agents:
+        flow_name = str(agent["flow_name"])
+        snapshot_flow = snapshots[int(agent["flow_snapshot_id"])]
+        entry = flows.setdefault(flow_name, _empty_top_flow(flow_name, snapshot_flow, None))
+        row = {
+            **_agent_row(conn, agent, snapshot_flow),
+            "flow_name": flow_name,
+            "current_state": str(agent["current_state"]),
+            "source_path": str(agent.get("source_path") or snapshot_flow.source_path),
+            "created_at": str(agent.get("created_at") or ""),
+            "updated_at": str(agent.get("updated_at") or ""),
+        }
+        entry["agents"].append(row)
+        entry["recent_count"] += 1
+        if not agent.get("ended_at"):
+            entry["active_count"] += 1
+        status = str(row["status"])
+        if status in entry["counts"]:
+            entry["counts"][status] += 1
+
+    for entry in flows.values():
+        entry["agents"].sort(key=lambda item: (str(item["state_name"]), int(item["id"])))
+
+    return {
+        "runtime": _runtime_summary(conn),
+        "summary": {
+            "active_agents": active_agent_count(conn),
+            "recent_agents": len(agents),
+            "total_agents": total_agent_count(conn),
+            "cumulative_agent_seconds": cumulative_agent_seconds(conn),
+        },
+        "recent": {
+            "window": recent,
+            "cutoff": cutoff,
+            "seconds": recent_seconds,
+        },
+        "flows": sorted(flows.values(), key=lambda item: str(item["name"])),
+        "events": [_top_event_item(event) for event in events],
     }
 
 
@@ -185,6 +244,39 @@ def _snapshot_flows(conn: Any, agents: list[dict[str, Any]]) -> dict[int, FlowSp
         snapshot = get_flow_snapshot(conn, snapshot_id)
         flows[snapshot_id] = flow_from_dict(json.loads(str(snapshot["snapshot_json"])))
     return flows
+
+
+def _catalog_flow_by_name(flow_name: str) -> FlowSpec | None:
+    entry = _catalog_entries_by_name().get(flow_name)
+    if entry is None:
+        return None
+    try:
+        return load_flow(entry["path"])
+    except Exception:
+        return None
+
+
+def _catalog_entries_by_name() -> dict[str, dict[str, str]]:
+    entries: dict[str, dict[str, str]] = {}
+    for item in discover_catalog().flows:
+        entries[item.name] = {
+            "name": item.name,
+            "description": item.description or "",
+            "path": item.path,
+        }
+    return entries
+
+
+def _empty_top_flow(flow_name: str, snapshot_flow: FlowSpec, catalog_entry: dict[str, str] | None) -> dict[str, Any]:
+    return {
+        "name": flow_name,
+        "description": (catalog_entry or {}).get("description") or snapshot_flow.description or "",
+        "path": (catalog_entry or {}).get("path") or snapshot_flow.source_path,
+        "counts": {"waiting": 0, "working": 0, "paused": 0, "needs_help": 0},
+        "active_count": 0,
+        "recent_count": 0,
+        "agents": [],
+    }
 
 
 def _merged_flow_description(snapshots: dict[int, FlowSpec]) -> str:
@@ -407,6 +499,23 @@ def _event_item(agent: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         "created_at": str(event["created_at"]),
         "absolute_time_text": absolute,
         "relative_time_text": relative,
+        "text": text,
+        "link": link,
+    }
+
+
+def _top_event_item(event: dict[str, Any]) -> dict[str, Any]:
+    text, link = _event_line(event)
+    state_name = str(event.get("state_name") or event.get("from_state") or event.get("current_state") or "")
+    return {
+        "id": int(event["id"]),
+        "agent_id": int(event["agent_id"]),
+        "flow_name": str(event.get("flow_name") or ""),
+        "state_name": state_name,
+        "current_state": str(event.get("current_state") or ""),
+        "kind": str(event["kind"]),
+        "created_at": str(event["created_at"]),
+        "absolute_time_text": _absolute_time_text(str(event["created_at"])),
         "text": text,
         "link": link,
     }

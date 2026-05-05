@@ -1,4 +1,4 @@
-import type { EditorDocument, EditorFilesResponse, EditorValidation, OverviewSnapshot } from "./types";
+import type { EditorDocument, EditorFilesResponse, EditorValidation, OverviewSnapshot, RuntimeTopSnapshot } from "./types";
 
 export async function fetchOverview(apiBaseUrl: string, flowName: string): Promise<OverviewSnapshot> {
   const response = await fetch(`${apiBaseUrl}/api/flows/${encodeURIComponent(flowName)}`);
@@ -14,6 +14,14 @@ export async function fetchFocus(apiBaseUrl: string, flowName: string, agentId: 
     throw new Error(await errorText(response));
   }
   return (await response.json()) as OverviewSnapshot;
+}
+
+export async function fetchRuntimeTop(apiBaseUrl: string, recent = "1h"): Promise<RuntimeTopSnapshot> {
+  const response = await fetch(`${apiBaseUrl}/api/runtime/top?recent=${encodeURIComponent(recent)}`);
+  if (!response.ok) {
+    throw new Error(await errorText(response));
+  }
+  return (await response.json()) as RuntimeTopSnapshot;
 }
 
 export async function postAction(

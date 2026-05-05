@@ -1,5 +1,6 @@
 import { formatArgs, formatCompactDuration, formatCountdown, formatStatus } from "../format";
 import type { FocusAgent } from "../types";
+import { LinkifiedText } from "./LinkifiedText";
 
 interface Props {
   agent: FocusAgent;
@@ -48,7 +49,11 @@ export function SelectedAgentHeader({
             </div>
             <div>{agent.cwd}</div>
             <div>{formatArgs(agent.args)}</div>
-            {agent.status_message ? <div className="selected-header__status">{agent.status_message}</div> : null}
+            {agent.status_message ? (
+              <div className="selected-header__status">
+                <LinkifiedText text={agent.status_message} />
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

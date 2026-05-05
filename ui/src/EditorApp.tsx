@@ -50,15 +50,29 @@ type ViewportAnchor = {
   zoom: number;
 };
 
+interface VisualEditorAppProps {
+  apiBaseUrl: string;
+  preferredFlowName?: string;
+  selectedFilePath?: string;
+  files?: EditorFileEntry[];
+  hideSidebar?: boolean;
+  onDirtyChange?: (dirty: boolean) => void;
+  onDocumentChange?: (document: EditorDocument | null) => void;
+  onFilesChange?: (files: EditorFileEntry[]) => void;
+}
+
 export function VisualEditorApp({
   apiBaseUrl,
   preferredFlowName,
-}: {
-  apiBaseUrl: string;
-  preferredFlowName?: string;
-}) {
+  selectedFilePath,
+  files: externalFiles,
+  hideSidebar = false,
+  onDirtyChange,
+  onDocumentChange,
+  onFilesChange,
+}: VisualEditorAppProps) {
   const reactFlow = useReactFlow();
-  const [files, setFiles] = useState<EditorFileEntry[]>([]);
+  const [localFiles, setLocalFiles] = useState<EditorFileEntry[]>([]);
   const [document, setDocument] = useState<EditorDocument | null>(null);
   const [selection, setSelection] = useState<EditorSelection>({ type: "flow" });
   const [query, setQuery] = useState("");
@@ -68,8 +82,18 @@ export function VisualEditorApp({
   const [notice, setNotice] = useState("");
   const viewportAnchorRef = useRef<ViewportAnchor | null>(null);
   const shortcutPanTimerRef = useRef<number | null>(null);
+  const files = externalFiles ?? localFiles;
+
+  function applyFiles(nextFiles: EditorFileEntry[]) {
+    setLocalFiles(nextFiles);
+    onFilesChange?.(nextFiles);
+  }
 
   useEffect(() => {
+    if (externalFiles) {
+      setBusy((current) => (current === "loading" ? null : current));
+      return;
+    }
     let cancelled = false;
     async function load() {
       setBusy("loading");
@@ -78,23 +102,7 @@ export function VisualEditorApp({
         if (cancelled) {
           return;
         }
-        setFiles(payload.files);
-        const params = new URLSearchParams(window.location.search);
-        const preferredPath = params.get("file") ?? "";
-        const preferredName = params.get("name") ?? preferredFlowName ?? "";
-        const preferred = preferredPath
-          ? payload.files.find((file) => file.path === preferredPath)
-          : preferredName
-            ? payload.files.find((file) => file.name === preferredName)
-            : undefined;
-        if (preferredName || preferredPath) {
-          setQuery(preferred?.name ?? preferredName);
-        }
-        const firstUserFlow = payload.files.find((file) => file.path.includes("/flows/"));
-        const first = preferred ?? firstUserFlow ?? payload.files[0];
-        if (first) {
-          await openFile(first.path, { quiet: true });
-        }
+        applyFiles(payload.files);
         setError("");
       } catch (exc) {
         if (!cancelled) {
@@ -110,7 +118,38 @@ export function VisualEditorApp({
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, preferredFlowName]);
+  }, [apiBaseUrl, externalFiles]);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  useEffect(() => {
+    onDocumentChange?.(document);
+  }, [document, onDocumentChange]);
+
+  useEffect(() => {
+    if (files.length === 0) {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const preferredPath = selectedFilePath ?? params.get("file") ?? "";
+    const preferredName = params.get("name") ?? preferredFlowName ?? "";
+    const preferred = preferredPath
+      ? files.find((file) => file.path === preferredPath)
+      : preferredName
+        ? files.find((file) => file.name === preferredName)
+        : undefined;
+    if (preferredName || preferredPath) {
+      setQuery(preferred?.name ?? preferredName);
+    }
+    const firstUserFlow = files.find((file) => file.path.includes("/flows/"));
+    const first = preferred ?? (!document && !selectedFilePath && !preferredName ? firstUserFlow ?? files[0] : undefined);
+    if (!first || first.path === document?.path) {
+      return;
+    }
+    void openFile(first.path, { quiet: !document });
+  }, [files, selectedFilePath, preferredFlowName]);
 
   const editableSignature = useMemo(
     () => (document ? JSON.stringify({ flow: document.flow, states: document.states }) : ""),
@@ -183,7 +222,7 @@ export function VisualEditorApp({
       setNotice("Saved");
       setError("");
       const payload = await fetchEditorFiles(apiBaseUrl);
-      setFiles(payload.files);
+      applyFiles(payload.files);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Failed to save flow");
     } finally {
@@ -488,7 +527,7 @@ export function VisualEditorApp({
   async function refreshFiles() {
     try {
       const payload = await fetchEditorFiles(apiBaseUrl);
-      setFiles(payload.files);
+      applyFiles(payload.files);
       setError("");
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Failed to refresh flow files");
@@ -496,7 +535,8 @@ export function VisualEditorApp({
   }
 
   return (
-    <div className="editor-shell">
+    <div className={["editor-shell", hideSidebar ? "editor-shell--embedded" : ""].join(" ")}>
+      {!hideSidebar ? (
       <aside className="editor-sidebar">
         <div className="editor-sidebar__header">
           <div>
@@ -538,6 +578,7 @@ export function VisualEditorApp({
           ))}
         </div>
       </aside>
+      ) : null}
       <section className="editor-main">
         <header className="editor-toolbar">
           <div className="editor-toolbar__identity" onClick={() => setSelection({ type: "flow" })}>

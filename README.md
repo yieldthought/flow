@@ -467,7 +467,8 @@ flow stop 12 done
 ```
 
 - `flow move`: move the agent to another state and leave it paused; run
-  `flow resume` when you want the target state to start
+  `flow resume` when you want the target state to start. Moving a finished
+  agent resurrects it from the selected state.
 - `flow stop`: stop the agent immediately, optionally marking it as a specific
   terminal state
 

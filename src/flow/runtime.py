@@ -884,6 +884,7 @@ class Runtime:
             "current_state": state_name,
             "state_entered_at": now,
             "ready_at": ready_at,
+            "ended_at": "",
             "phase": phase,
             "status_message": f"{reason}; paused until resume" if pause else (reason if not ready_at else f"Waiting until {ready_at}"),
             "pending_state_json": "",

@@ -5,6 +5,7 @@ import { stateHue } from "../color";
 import { formatArgs, formatCompactDuration, formatCountdown, stateSummaryText, truncate } from "../format";
 import type { AgentRow } from "../types";
 import type { GraphStateNodeData } from "../graph";
+import { LinkifiedText } from "./LinkifiedText";
 
 type StateHueStyle = CSSProperties & {
   "--state-hue"?: number;
@@ -247,12 +248,14 @@ function pillTone(row: AgentRow, tone?: "waiting" | "working" | "paused" | "need
   return row.status;
 }
 
-function AgentHoverPopover({ row }: { row: AgentRow }) {
+export function AgentHoverPopover({ row }: { row: AgentRow }) {
   const message = row.latest_message?.trim() || "No agent message yet.";
   return (
     <div className="agent-hover-popover">
       <div className="agent-hover-popover__title">Latest from #{row.id}</div>
-      <div className="agent-hover-popover__message">{truncate(message, 220)}</div>
+      <div className="agent-hover-popover__message">
+        <LinkifiedText text={truncate(message, 220)} />
+      </div>
     </div>
   );
 }

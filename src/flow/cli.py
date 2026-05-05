@@ -513,14 +513,6 @@ def cmd_top(conn: Any, flow_name: str | None, *, recent: str = "1h") -> int:
 
 
 def cmd_ui(conn: Any, flow_name: str | None) -> int:
-    if flow_name:
-        rows = [dict(row) for row in list_agents(conn, flow_name)]
-    else:
-        rows = []
-    if flow_name and not rows:
-        print(f"error: unknown or inactive flow '{flow_name}'", file=sys.stderr)
-        return 1
-
     ui_dir = Path(__file__).resolve().parents[2] / "ui"
     package_json = ui_dir / "package.json"
     if not package_json.exists():

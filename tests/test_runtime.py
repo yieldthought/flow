@@ -762,6 +762,70 @@ done:
     assert "State: second" in backend.prompts[agent_id][2]
 
 
+def test_runtime_move_from_finished_resurrects_until_resume(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    monkeypatch.setattr("flow.runtime.current_actor", lambda: "alice")
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+first:
+  start: true
+  prompt: one
+  transitions:
+    - go: done
+
+second:
+  prompt: two
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+    backend = FakeBackend()
+    backend.set_script(agent_id, ["worked", '{"choice":"done","reason":"finished"}'])
+    runtime = Runtime(backend=backend)
+
+    for _ in range(4):
+        runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["current_state"] == "done"
+    assert agent["phase"] == "finished"
+    assert agent["ended_at"]
+    assert backend.sessions[agent_id] is False
+
+    enqueue_command(conn, agent_id, "move", {"state": "second"})
+    conn.commit()
+    runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["current_state"] == "second"
+    assert agent["phase"] == "paused"
+    assert agent["substate"] == "interaction"
+    assert agent["ended_at"] == ""
+    assert len(backend.prompts[agent_id]) == 2
+
+    enqueue_command(conn, agent_id, "resume", {})
+    conn.commit()
+    runtime.tick(conn)
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["current_state"] == "second"
+    assert agent["phase"] == "working"
+    assert agent["substate"] == "normal"
+    assert agent["ended_at"] == ""
+    assert backend.sessions[agent_id] is True
+    assert len(backend.prompts[agent_id]) == 3
+    assert "State: second" in backend.prompts[agent_id][2]
+
+
 def test_runtime_pause_does_not_interrupt_running_turn(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     monkeypatch.setattr("flow.runtime.current_actor", lambda: "alice")

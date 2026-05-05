@@ -15,6 +15,24 @@ export async function loadLaunchContext(): Promise<LaunchContext> {
   throw new Error("Missing launch context");
 }
 
+export async function openExternalUrl(url: string): Promise<void> {
+  const target = new URL(url);
+  if (target.protocol !== "http:" && target.protocol !== "https:") {
+    throw new Error("Only http and https links can be opened");
+  }
+
+  try {
+    const { invoke, isTauri } = await import("@tauri-apps/api/core");
+    if (isTauri()) {
+      await invoke("open_external_url", { url: target.toString() });
+      return;
+    }
+  } catch {
+    // Fall through to browser behavior outside Tauri or if the command is unavailable.
+  }
+  window.open(target.toString(), "_blank", "noopener,noreferrer");
+}
+
 async function loadTauriLaunchContext(): Promise<LaunchContext | null> {
   try {
     const { invoke, isTauri } = await import("@tauri-apps/api/core");

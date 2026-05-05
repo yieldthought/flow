@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.fn();
 const isTauriMock = vi.fn();
@@ -9,9 +9,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 describe("loadLaunchContext", () => {
+  const originalOpen = window.open;
+
   beforeEach(() => {
     invokeMock.mockReset();
     isTauriMock.mockReset();
+    window.open = vi.fn();
     window.history.replaceState({}, "", "/");
   });
 
@@ -39,5 +42,35 @@ describe("loadLaunchContext", () => {
       apiBaseUrl: "http://127.0.0.1:5678",
     });
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("opens external links through Tauri when available", async () => {
+    isTauriMock.mockReturnValue(true);
+    invokeMock.mockResolvedValue(undefined);
+
+    const { openExternalUrl } = await import("./tauri");
+
+    await openExternalUrl("https://example.com/path");
+    expect(invokeMock).toHaveBeenCalledWith("open_external_url", { url: "https://example.com/path" });
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it("falls back to window.open outside Tauri", async () => {
+    isTauriMock.mockReturnValue(false);
+
+    const { openExternalUrl } = await import("./tauri");
+
+    await openExternalUrl("https://example.com/path");
+    expect(window.open).toHaveBeenCalledWith("https://example.com/path", "_blank", "noopener,noreferrer");
+  });
+
+  it("rejects non-http external links", async () => {
+    const { openExternalUrl } = await import("./tauri");
+
+    await expect(openExternalUrl("file:///tmp/demo")).rejects.toThrow("Only http and https");
+  });
+
+  afterEach(() => {
+    window.open = originalOpen;
   });
 });

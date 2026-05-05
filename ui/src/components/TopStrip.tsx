@@ -1,5 +1,6 @@
 import { diagnosticText, formatCompactDuration } from "../format";
 import type { OverviewSnapshot } from "../types";
+import { LinkifiedText } from "./LinkifiedText";
 
 export function TopStrip({ snapshot }: { snapshot: OverviewSnapshot }) {
   const { runtime, flow } = snapshot;
@@ -26,7 +27,9 @@ export function TopStrip({ snapshot }: { snapshot: OverviewSnapshot }) {
       {banner ? (
         <div className={`diagnostic-banner diagnostic-banner--${banner.level}`}>
           <span className="diagnostic-banner__label">{banner.level}</span>
-          <span>{diagnosticText(banner)}</span>
+          <span>
+            <LinkifiedText text={diagnosticText(banner)} />
+          </span>
         </div>
       ) : null}
     </header>

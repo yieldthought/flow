@@ -22,7 +22,7 @@ from flow.store import (
     set_daemon_status,
     update_agent,
 )
-from flow.ui_data import build_focus_snapshot, build_overview_snapshot
+from flow.ui_data import build_focus_snapshot, build_overview_snapshot, build_runtime_top_snapshot
 from flow.ui_server import create_ui_app
 
 
@@ -221,6 +221,106 @@ done:
 
     edge = next(item for item in snapshot["flow"]["edges"] if item["key"] == "check->check")
     assert edge["transition_label_text"] == "[10m wait]"
+
+
+def test_build_overview_snapshot_supports_catalog_flow_without_agents(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    monkeypatch.setenv("FLOW_PATH", str(tmp_path))
+    conn = connect()
+    init_db(conn)
+    write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  description: Editable but not running.
+
+check:
+  start: true
+  prompt: Check
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+
+    snapshot = build_overview_snapshot(conn, "demo")
+
+    assert snapshot["flow"]["name"] == "demo"
+    assert snapshot["flow"]["description"] == "Editable but not running."
+    assert snapshot["flow"]["counts"] == {"waiting": 0, "working": 0, "paused": 0, "needs_help": 0}
+    assert [item["name"] for item in snapshot["flow"]["states"]] == ["check", "done"]
+    assert all(not bucket for state in snapshot["flow"]["states"] for bucket in state["rows"].values())
+
+
+def test_runtime_top_endpoint_returns_recent_agents_and_events_across_flows(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    alpha_path = write_flow(
+        tmp_path / "alpha.yaml",
+        """
+flow:
+  name: alpha
+  description: Alpha flow.
+
+check:
+  start: true
+  prompt: Check
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    beta_path = write_flow(
+        tmp_path / "beta.yaml",
+        """
+flow:
+  name: beta
+  description: Beta flow.
+
+start:
+  start: true
+  prompt: Start
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    alpha_id = create_runtime_agent(conn, alpha_path, {})
+    beta_id = create_runtime_agent(conn, beta_path, {})
+    record_agent_event(
+        conn,
+        alpha_id,
+        "decision",
+        from_state="check",
+        to_state="done",
+        choice="done",
+        reason="Created https://github.com/example/repo/issues/1",
+    )
+    record_agent_event(conn, beta_id, "needs_help", state_name="start", reason="Need help")
+    conn.commit()
+
+    snapshot = build_runtime_top_snapshot(conn, recent="1h")
+    client = TestClient(create_ui_app())
+    response = client.get("/api/runtime/top")
+
+    assert response.status_code == 200
+    assert [flow["name"] for flow in snapshot["flows"]] == ["alpha", "beta"]
+    assert response.json()["summary"]["active_agents"] == 2
+    assert response.json()["summary"]["total_agents"] == 2
+    assert "cumulative_agent_seconds" in response.json()["summary"]
+    alpha = next(flow for flow in response.json()["flows"] if flow["name"] == "alpha")
+    assert alpha["active_count"] == 1
+    assert alpha["agents"][0]["latest_message"] == "Created https://github.com/example/repo/issues/1"
+    assert any(event["flow_name"] == "alpha" and event["agent_id"] == alpha_id for event in response.json()["events"])
+    assert any(event["flow_name"] == "beta" and event["agent_id"] == beta_id for event in response.json()["events"])
 
 
 def test_ui_api_overview_endpoint_returns_flow_snapshot(tmp_path: Path, monkeypatch: Any) -> None:
@@ -443,5 +543,44 @@ done:
         "tauri:dev",
     ]
     assert launched["env_flow"] == "demo"
+    assert launched["env_url"] == "http://127.0.0.1:4123"
+    assert launched["closed"] is True
+
+
+def test_cmd_ui_launches_tauri_dev_without_flow_name(tmp_path: Path, monkeypatch: Any) -> None:
+    conn = connect(tmp_path / "runtime.sqlite3")
+    init_db(conn)
+    ui_dir = Path(__file__).resolve().parents[1] / "ui"
+    ui_dir.mkdir(exist_ok=True)
+    if not (ui_dir / "package.json").exists():
+        (ui_dir / "package.json").write_text("{}", encoding="utf-8")
+
+    launched: dict[str, Any] = {}
+
+    class FakeHandle:
+        url = "http://127.0.0.1:4123"
+
+        def close(self) -> None:
+            launched["closed"] = True
+
+    monkeypatch.setattr("flow.cli.start_ui_server", lambda: FakeHandle())
+    monkeypatch.setattr("flow.cli.shutil.which", lambda _name: "/opt/homebrew/bin/npm")
+
+    def fake_call(command: list[str], cwd: Path, env: dict[str, str]) -> int:
+        launched["command"] = command
+        launched["cwd"] = str(cwd)
+        launched["env_flow"] = env["FLOW_UI_FLOW_NAME"]
+        launched["env_url"] = env["FLOW_UI_API_BASE_URL"]
+        return 0
+
+    monkeypatch.setattr("flow.cli.subprocess.call", fake_call)
+
+    assert cmd_ui(conn, None) == 0
+    assert launched["command"] == [
+        "npm",
+        "run",
+        "tauri:dev",
+    ]
+    assert launched["env_flow"] == ""
     assert launched["env_url"] == "http://127.0.0.1:4123"
     assert launched["closed"] is True

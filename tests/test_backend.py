@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1101,6 +1104,50 @@ def test_find_turn_prefers_matching_request_id_over_started_after() -> None:
     assert turn is not None
     assert turn["turn_id"] == "turn-2"
     assert turn["request_id"] == "req-abc123"
+
+
+def test_resolve_rollout_matches_marker_only_in_submitted_user_message(tmp_path: Path, monkeypatch: object) -> None:
+    codex_home = tmp_path / "codex-home"
+    sessions = codex_home / "sessions" / "2026" / "05" / "15"
+    sessions.mkdir(parents=True)
+    marker = "flow-agent-84-9a1b40cf"
+    correct = sessions / "rollout-2026-05-15T10-40-55-thread-right.jsonl"
+    unrelated = sessions / "rollout-2026-05-15T10-41-00-thread-wrong.jsonl"
+
+    correct.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": "thread-right"}},
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": f"[flow-control]\nmarker: {marker}\n[/flow-control]"},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    unrelated.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": "thread-wrong"}},
+                {"type": "response_item", "payload": {"type": "function_call_output", "output": marker}},
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    now = time.time()
+    os.utime(correct, (now, now))
+    os.utime(unrelated, (now + 10, now + 10))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    path, thread_id = CodexBackend()._resolve_rollout("", "", marker, "")
+
+    assert path == str(correct)
+    assert thread_id == "thread-right"
 
 
 def test_find_turn_matches_request_id_before_task_started() -> None:

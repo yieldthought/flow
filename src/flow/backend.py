@@ -797,11 +797,7 @@ class CodexBackend(AgentBackend):
                 continue
             best.append((stat.st_mtime, path))
         for _mtime, path in sorted(best, reverse=True)[:200]:
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if launch_marker and launch_marker in text:
+            if _rollout_contains_launch_marker(path, launch_marker):
                 return str(path), _thread_id_from_rollout(path)
         return "", thread_id
 
@@ -891,6 +887,25 @@ def _thread_id_from_rollout(path: Path) -> str:
     except (OSError, json.JSONDecodeError):
         return ""
     return ""
+
+
+def _rollout_contains_launch_marker(path: Path, launch_marker: str) -> bool:
+    if not launch_marker:
+        return False
+    for event in _read_rollout_events(path):
+        payload = event.get("payload") or {}
+        event_type = event.get("type")
+        if event_type == "event_msg" and payload.get("type") == "user_message":
+            if launch_marker in str(payload.get("message") or ""):
+                return True
+            continue
+        if event_type == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+            content = payload.get("content") or []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "input_text":
+                    if launch_marker in str(item.get("text") or ""):
+                        return True
+    return False
 
 
 def _attach_env() -> dict[str, str]:

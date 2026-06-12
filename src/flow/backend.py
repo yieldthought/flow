@@ -555,7 +555,14 @@ class CodexBackend(AgentBackend):
             return
 
         content = _visible_prompt_content(text)
-        if content is None or not content.strip() or _is_codex_placeholder_prompt_content(content):
+        if content is None or not content.strip():
+            return
+        if _is_codex_placeholder_prompt_content(content):
+            # Codex can leave starter-template text in the active composer after
+            # a turn. Clear just that line before pasting Flow's prompt; Enter
+            # can otherwise submit the template instead of the pasted prompt.
+            self._run_tmux(["send-keys", "-t", target, "C-u"], check=False)
+            self._wait_for_prompt_ready(session, timeout_seconds=timeout_seconds)
             return
 
         # Ctrl-C clears Codex's whole draft composer when text is present. This

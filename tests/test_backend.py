@@ -691,9 +691,10 @@ def test_clear_prompt_input_leaves_blank_composer_open(monkeypatch: object) -> N
     assert waited == []
 
 
-def test_clear_prompt_input_leaves_placeholder_composer_open(monkeypatch: object) -> None:
+def test_clear_prompt_input_clears_placeholder_composer_line(monkeypatch: object) -> None:
     backend = CodexBackend()
     calls: list[list[str]] = []
+    waited: list[tuple[str, float]] = []
 
     def fake_run_tmux(args: list[str], check: bool = True) -> SimpleNamespace:
         del check
@@ -703,10 +704,16 @@ def test_clear_prompt_input_leaves_placeholder_composer_open(monkeypatch: object
     monkeypatch.setattr(backend, "_run_tmux", fake_run_tmux)
     monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "› Use /skills to list available skills\n\n  gpt-5.5 low")
     monkeypatch.setattr(backend, "_pane_current_command", lambda target: "codex")
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_prompt_ready",
+        lambda session, timeout_seconds=15.0: waited.append((session, timeout_seconds)),
+    )
 
     backend._clear_prompt_input("flow-agent-9", timeout_seconds=3.0)
 
-    assert calls == []
+    assert calls == [["send-keys", "-t", "flow-agent-9:0.0", "C-u"]]
+    assert waited == [("flow-agent-9", 3.0)]
 
 
 def test_visible_prompt_content_returns_empty_for_blank_prompt() -> None:

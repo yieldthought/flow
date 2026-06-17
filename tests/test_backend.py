@@ -495,7 +495,11 @@ def test_launch_codex_pastes_command_before_enter(monkeypatch: object) -> None:
     monkeypatch.setattr(backend, "_run_tmux", fake_run_tmux)
     monkeypatch.setattr(backend, "_launch_command", lambda _agent: command)
     monkeypatch.setattr(backend, "_capture_pane_text", lambda target: f"{target} shell prompt")
-    monkeypatch.setattr(backend, "_wait_for_paste_settle", lambda target, baseline: settled.append((target, baseline)))
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_paste_settle",
+        lambda target, baseline, *, baseline_cursor="": settled.append((target, baseline)),
+    )
 
     backend._launch_codex({"tmux_session": "flow-agent-9"})
 
@@ -551,7 +555,12 @@ def test_send_prompt_waits_for_prompt_ready_before_pasting(monkeypatch: object) 
     monkeypatch.setattr(backend, "_ensure_codex_prompt_ready", lambda agent: waited.append(agent["tmux_session"]))
     monkeypatch.setattr(backend, "_clear_prompt_input", lambda session: cleared.append(session))
     monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "baseline")
-    monkeypatch.setattr(backend, "_wait_for_paste_settle", lambda target, baseline: settled.append((target, baseline)))
+    monkeypatch.setattr(backend, "_pane_cursor_position", lambda target: "0,0")
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_paste_settle",
+        lambda target, baseline, *, baseline_cursor="": settled.append((target, baseline)),
+    )
     monkeypatch.setattr(
         backend,
         "_wait_for_turn_start",
@@ -594,6 +603,22 @@ def test_submit_prompt_sends_single_enter(monkeypatch: object) -> None:
     backend._submit_prompt("flow-agent-9:0.0")
 
     assert calls == [["send-keys", "-t", "flow-agent-9:0.0", "Enter"]]
+
+
+def test_wait_for_paste_settle_accepts_cursor_movement_when_text_is_unchanged(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    cursors = iter(["20,4", "20,4"])
+
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "unchanged pane text")
+    monkeypatch.setattr(backend, "_pane_cursor_position", lambda target: next(cursors))
+    monkeypatch.setattr("flow.backend.time.sleep", lambda _seconds: None)
+
+    backend._wait_for_paste_settle(
+        "flow-agent-9:0.0",
+        "unchanged pane text",
+        timeout_seconds=1.0,
+        baseline_cursor="3,4",
+    )
 
 
 def test_clear_prompt_input_sends_ctrl_c_and_waits_for_ready(monkeypatch: object) -> None:
@@ -785,7 +810,12 @@ def test_set_thread_name_submits_inline_rename_and_waits_for_rollout_event(monke
     monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session: waited.append(session))
     monkeypatch.setattr(backend, "_clear_prompt_input", lambda session: cleared.append(session))
     monkeypatch.setattr(backend, "_capture_pane_text", lambda target: next(captured_texts))
-    monkeypatch.setattr(backend, "_wait_for_paste_settle", lambda target, baseline: settled.append((target, baseline)))
+    monkeypatch.setattr(backend, "_pane_cursor_position", lambda target: "0,0")
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_paste_settle",
+        lambda target, baseline, *, baseline_cursor="": settled.append((target, baseline)),
+    )
     monkeypatch.setattr(
         backend,
         "_wait_for_thread_rename_event",
@@ -825,7 +855,8 @@ def test_set_thread_name_uses_ready_placeholder_as_baseline(monkeypatch: object)
     monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session: waited.append(session))
     monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "baseline" if cleared else prompt_text)
     monkeypatch.setattr(backend, "_clear_prompt_input", lambda session: cleared.append(session))
-    monkeypatch.setattr(backend, "_wait_for_paste_settle", lambda target, baseline: None)
+    monkeypatch.setattr(backend, "_pane_cursor_position", lambda target: "0,0")
+    monkeypatch.setattr(backend, "_wait_for_paste_settle", lambda target, baseline, *, baseline_cursor="": None)
     monkeypatch.setattr(
         backend,
         "_wait_for_thread_rename_event",

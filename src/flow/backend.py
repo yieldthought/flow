@@ -129,13 +129,14 @@ class CodexBackend(AgentBackend):
         baseline = self._capture_pane_text(target)
         self._clear_prompt_input(session)
         baseline = self._capture_pane_text(target)
+        baseline_cursor = self._pane_cursor_position(target)
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             handle.write(f"/rename {sanitized}")
             buffer_path = handle.name
         try:
             self._run_tmux(["load-buffer", buffer_path])
             self._paste_loaded_buffer(target)
-            self._wait_for_paste_settle(target, baseline)
+            self._wait_for_paste_settle(target, baseline, baseline_cursor=baseline_cursor)
             submitted_at = utc_now()
             self._run_tmux(["send-keys", "-t", target, "Enter"])
             if not self._wait_for_thread_rename_event(agent, sanitized, started_after=submitted_at):
@@ -418,6 +419,10 @@ class CodexBackend(AgentBackend):
         current = self._run_tmux(["display-message", "-p", "-t", target, "#{pane_current_command}"])
         return (current.stdout or "").strip()
 
+    def _pane_cursor_position(self, target: str) -> str:
+        current = self._run_tmux(["display-message", "-p", "-t", target, "#{cursor_x},#{cursor_y}"])
+        return (current.stdout or "").strip()
+
     def _new_session_command(self, session: str, cwd: str, shell: str) -> list[str]:
         command = ["new-session", "-d", "-s", session, "-c", cwd, "env"]
         for name in _session_env_unset_names():
@@ -572,19 +577,28 @@ class CodexBackend(AgentBackend):
         self._run_tmux(["send-keys", "-t", target, "C-c"], check=False)
         self._wait_for_prompt_ready(session, timeout_seconds=timeout_seconds)
 
-    def _wait_for_paste_settle(self, target: str, baseline: str, timeout_seconds: float = 5.0) -> None:
+    def _wait_for_paste_settle(
+        self,
+        target: str,
+        baseline: str,
+        timeout_seconds: float = 5.0,
+        *,
+        baseline_cursor: str = "",
+    ) -> None:
         deadline = time.monotonic() + timeout_seconds
         saw_change = False
-        stable_text = ""
+        stable_snapshot = ""
         stable_count = 0
         while time.monotonic() < deadline:
             text = self._capture_pane_text(target)
-            if text != baseline:
+            cursor = self._pane_cursor_position(target) if baseline_cursor else ""
+            if text != baseline or (baseline_cursor and cursor != baseline_cursor):
                 saw_change = True
-                if text == stable_text:
+                snapshot = f"{cursor}\0{text}"
+                if snapshot == stable_snapshot:
                     stable_count += 1
                 else:
-                    stable_text = text
+                    stable_snapshot = snapshot
                     stable_count = 1
                 if stable_count >= 2:
                     return
@@ -593,9 +607,10 @@ class CodexBackend(AgentBackend):
             raise RuntimeError("pasted prompt never appeared in the Codex pane")
 
     def _paste_prompt(self, target: str, buffer_path: str, baseline: str) -> None:
+        baseline_cursor = self._pane_cursor_position(target)
         self._run_tmux(["load-buffer", buffer_path])
         self._paste_loaded_buffer(target)
-        self._wait_for_paste_settle(target, baseline)
+        self._wait_for_paste_settle(target, baseline, baseline_cursor=baseline_cursor)
 
     def _paste_text(self, target: str, text: str, *, baseline: str | None = None, bracketed: bool = True) -> None:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
@@ -603,9 +618,10 @@ class CodexBackend(AgentBackend):
             buffer_path = handle.name
         try:
             self._run_tmux(["load-buffer", buffer_path])
+            baseline_cursor = self._pane_cursor_position(target) if baseline is not None else ""
             self._paste_loaded_buffer(target, bracketed=bracketed)
             if baseline is not None:
-                self._wait_for_paste_settle(target, baseline)
+                self._wait_for_paste_settle(target, baseline, baseline_cursor=baseline_cursor)
         finally:
             try:
                 os.unlink(buffer_path)

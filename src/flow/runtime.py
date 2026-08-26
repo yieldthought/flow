@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import signal
@@ -31,7 +32,7 @@ from .common import (
     utc_now,
 )
 from .flowfile import FlowSpec, StateSpec, TransitionSpec, flow_from_dict
-from .paths import agent_scratchpad_dir
+from .paths import agent_scratchpad_dir, flow_home
 from .scratchpad import remove_scratchpad_dir, scratchpad_path_text
 from .store import (
     clear_daemon_status,
@@ -76,6 +77,10 @@ class Runtime:
         self._recovered = False
 
     def run_forever(self) -> int:
+        daemon_lock = _acquire_daemon_lock()
+        if daemon_lock is None:
+            print("another Flow runtime daemon is already active", file=sys.stderr)
+            return 0
         conn = connect()
         init_db(conn)
         started_at = format_utc(utc_now())
@@ -131,6 +136,7 @@ class Runtime:
                     raise
                 conn.rollback()
             conn.close()
+            daemon_lock.close()
         return exit_code
 
     def tick(self, conn: Any) -> None:
@@ -1125,6 +1131,22 @@ class Runtime:
                 }
             )
         update_agent(conn, int(agent["id"]), **updates)
+
+
+def _acquire_daemon_lock() -> Any | None:
+    path = flow_home() / "daemon.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    return handle
 
 
 def build_state_prompt(flow: FlowSpec, state: StateSpec, agent: dict[str, Any], *, request_id: str) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1760,3 +1761,19 @@ def test_runtime_run_forever_retries_transient_database_lock(tmp_path: Path, mon
     init_db(conn)
     exit_info = daemon_exit_info(conn)
     assert exit_info["last_exit_kind"] == "clean"
+
+
+def test_runtime_run_forever_exits_when_daemon_lock_held(tmp_path: Path, monkeypatch: Any, capsys: Any) -> None:
+    flow_home = tmp_path / ".flow"
+    monkeypatch.setenv("FLOW_HOME", str(flow_home))
+    flow_home.mkdir()
+    lock_path = flow_home / "daemon.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        runtime = Runtime(backend=FakeBackend())
+
+        assert runtime.run_forever() == 0
+
+    captured = capsys.readouterr()
+    assert "another Flow runtime daemon is already active" in captured.err

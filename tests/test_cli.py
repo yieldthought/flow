@@ -23,6 +23,7 @@ from flow.cli import (
     cmd_top,
     cmd_validate,
     cmd_view,
+    ensure_daemon,
     main,
     run_top_mode,
     wait_for_agent_absent,
@@ -1087,6 +1088,24 @@ def test_cmd_restart_inits_directly_when_inactive(tmp_path: Path, monkeypatch: o
 
     assert cmd_restart(conn) == 0
     assert calls == ["init"]
+
+
+def test_ensure_daemon_waits_for_concurrent_winner(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    inactive = {"active": "0", "pid": "", "started_at": "", "heartbeat_at": ""}
+    active = {"active": "1", "pid": "123", "started_at": "", "heartbeat_at": ""}
+    statuses = iter([inactive, inactive, active])
+
+    monkeypatch.setattr("flow.cli.daemon_status", lambda _conn: next(statuses))
+    monkeypatch.setattr("flow.cli.subprocess.Popen", lambda *args, **kwargs: object())
+    monkeypatch.setattr("flow.cli.time.sleep", lambda _seconds: None)
+
+    assert ensure_daemon(conn) is True
 
 
 def test_wait_for_agent_absent_reports_timeout(tmp_path: Path) -> None:

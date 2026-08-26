@@ -650,7 +650,7 @@ def ensure_daemon(conn: Any) -> bool:
         return True
     log_path = logs_dir() / "daemon.log"
     with log_path.open("a", encoding="utf-8") as handle:
-        process = subprocess.Popen(
+        subprocess.Popen(
             [sys.executable, "-m", "flow.cli", "_daemon", "--foreground"],
             stdin=subprocess.DEVNULL,
             stdout=handle,
@@ -658,13 +658,14 @@ def ensure_daemon(conn: Any) -> bool:
             start_new_session=True,
         )
     deadline = time.monotonic() + 5.0
+    # A concurrent launcher may have won the runtime's singleton lock. Poll
+    # shared daemon status for the full startup window even if this child exits
+    # so the winning daemon has time to announce itself.
     while time.monotonic() < deadline:
         time.sleep(0.1)
         status = daemon_status(conn)
         if status["active"] == "1":
             return True
-        if process.poll() is not None:
-            break
     return False
 
 

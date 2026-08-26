@@ -21,6 +21,8 @@ from .common import format_utc, parse_utc, pending_state_payload, utc_now
 from .scratchpad import ensure_scratchpad_dir
 
 _SUBMIT_RETRY_INTERVAL_SECONDS = 1.5
+_LAUNCH_READY_STABLE_SAMPLES = 10
+_PASTE_READY_STABLE_SAMPLES = 10
 
 
 @dataclass(frozen=True)
@@ -82,15 +84,15 @@ class CodexBackend(AgentBackend):
             self._run_tmux(self._new_session_command(session, cwd, shell))
             self._wait_for_session(session)
             self._sanitize_tmux_session_environment(session)
-            self._launch_codex(agent)
-            self._wait_for_codex_ready(session)
+            pane_launch_marker = self._launch_codex(agent)
+            self._wait_for_codex_ready(session, pane_launch_marker=pane_launch_marker)
             return {"launch_command": self._launch_signature(agent), "thread_id": agent.get("thread_id", "")}
 
         desired = self._launch_signature(agent)
         if not self._session_has_live_codex(session) or agent.get("launch_command") != desired:
             self.interrupt(agent)
-            self._launch_codex(agent)
-            self._wait_for_codex_ready(session)
+            pane_launch_marker = self._launch_codex(agent)
+            self._wait_for_codex_ready(session, pane_launch_marker=pane_launch_marker)
         return {"launch_command": desired, "thread_id": agent.get("thread_id", "")}
 
     def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
@@ -341,14 +343,16 @@ class CodexBackend(AgentBackend):
             last_event_at=turn["last_event_at"],
         )
 
-    def _launch_codex(self, agent: dict[str, Any]) -> None:
+    def _launch_codex(self, agent: dict[str, Any]) -> str:
         target = f"{agent['tmux_session']}:0.0"
         self._run_tmux(["send-keys", "-t", target, "C-c"], check=False)
         self._run_tmux(["send-keys", "-t", target, "Enter"], check=False)
         self._run_tmux(["send-keys", "-t", target, "C-l"], check=False)
-        baseline = self._capture_pane_text(target)
-        self._paste_text(target, self._launch_command(agent), baseline=baseline, bracketed=False)
+        pane_launch_marker = f"FLOW_CODEX_LAUNCH_{uuid.uuid4().hex}"
+        command = f"printf '\\n{pane_launch_marker}\\n'; {self._launch_command(agent)}"
+        self._paste_text(target, command, bracketed=False)
         self._run_tmux(["send-keys", "-t", target, "Enter"])
+        return pane_launch_marker
 
     def _launch_command(self, agent: dict[str, Any]) -> str:
         parts = self._launch_parts(agent)
@@ -451,7 +455,13 @@ class CodexBackend(AgentBackend):
             time.sleep(0.05)
         raise RuntimeError(f"tmux session '{session}' did not stay alive after creation")
 
-    def _wait_for_codex_ready(self, session: str, timeout_seconds: float = 120.0) -> None:
+    def _wait_for_codex_ready(
+        self,
+        session: str,
+        timeout_seconds: float = 120.0,
+        *,
+        pane_launch_marker: str = "",
+    ) -> None:
         deadline = time.monotonic() + timeout_seconds
         target = f"{session}:0.0"
         last_trust_confirm_at = 0.0
@@ -459,6 +469,7 @@ class CodexBackend(AgentBackend):
         last_current_command = ""
         stable_ready_count = 0
         previous_ready_snapshot = ""
+        launch_marker_seen = not bool(pane_launch_marker)
         while True:
             current = subprocess.run(
                 ["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"],
@@ -466,12 +477,21 @@ class CodexBackend(AgentBackend):
                 text=True,
             )
             capture = subprocess.run(
-                ["tmux", "capture-pane", "-pt", target, "-S", "-80"],
+                ["tmux", "capture-pane", "-pt", target, "-S", "-80" if launch_marker_seen else "-"],
                 capture_output=True,
                 text=True,
             )
             if capture.returncode == 0:
                 text = capture.stdout or ""
+                if pane_launch_marker and not launch_marker_seen:
+                    marker_offset = text.rfind(pane_launch_marker)
+                    if marker_offset < 0:
+                        if time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.1)
+                        continue
+                    text = text[marker_offset + len(pane_launch_marker) :]
+                    launch_marker_seen = True
                 current_command = (current.stdout or "").strip()
                 last_text = text
                 last_current_command = current_command
@@ -486,7 +506,10 @@ class CodexBackend(AgentBackend):
                     stable_ready_count = 0
                     previous_ready_snapshot = ""
                     if now_ts - last_trust_confirm_at >= 1.0:
-                        self._run_tmux(["send-keys", "-t", target, "Enter"], check=False)
+                        # Codex 0.148's workspace-trust screen does not reliably
+                        # accept its selected default through tmux. Choose the
+                        # affirmative option explicitly, then send carriage return.
+                        self._run_tmux(["send-keys", "-t", target, "1", "C-m"], check=False)
                         last_trust_confirm_at = now_ts
                     if now_ts >= deadline:
                         break
@@ -499,7 +522,10 @@ class CodexBackend(AgentBackend):
                     else:
                         previous_ready_snapshot = snapshot
                         stable_ready_count = 1
-                    if stable_ready_count >= 2:
+                    # Codex may briefly render the composer before its workspace
+                    # trust modal appears. Require a full stable second so Flow
+                    # cannot paste a state prompt into that transient composer.
+                    if stable_ready_count >= _LAUNCH_READY_STABLE_SAMPLES:
                         return
                 else:
                     stable_ready_count = 0
@@ -540,16 +566,26 @@ class CodexBackend(AgentBackend):
     def _ensure_codex_prompt_ready(self, agent: dict[str, Any], timeout_seconds: float = 120.0) -> None:
         session = agent["tmux_session"]
         if not self._session_has_live_codex(session):
-            self._launch_codex(agent)
-            self._wait_for_codex_ready(session, timeout_seconds=timeout_seconds)
+            pane_launch_marker = self._launch_codex(agent)
+            self._wait_for_codex_ready(
+                session,
+                timeout_seconds=timeout_seconds,
+                pane_launch_marker=pane_launch_marker,
+            )
+            self._wait_for_prompt_ready(session, timeout_seconds=timeout_seconds)
             return
         try:
             self._wait_for_prompt_ready(session)
         except RuntimeError:
             if self._session_has_live_codex(session):
                 raise
-            self._launch_codex(agent)
-            self._wait_for_codex_ready(session, timeout_seconds=timeout_seconds)
+            pane_launch_marker = self._launch_codex(agent)
+            self._wait_for_codex_ready(
+                session,
+                timeout_seconds=timeout_seconds,
+                pane_launch_marker=pane_launch_marker,
+            )
+            self._wait_for_prompt_ready(session, timeout_seconds=timeout_seconds)
 
     def _clear_prompt_input(self, session: str, timeout_seconds: float = 5.0) -> None:
         target = f"{session}:0.0"
@@ -600,7 +636,7 @@ class CodexBackend(AgentBackend):
                 else:
                     stable_snapshot = snapshot
                     stable_count = 1
-                if stable_count >= 2:
+                if stable_count >= _PASTE_READY_STABLE_SAMPLES:
                     return
             time.sleep(0.05)
         if not saw_change:
@@ -735,11 +771,17 @@ class CodexBackend(AgentBackend):
                 and submit_attempts < 2
                 and now - last_submit_attempt >= _SUBMIT_RETRY_INTERVAL_SECONDS
             ):
-                text = self._capture_pane_text(target)
+                # Long drafts can scroll their Flow control header outside the
+                # short pane tail. Inspect the full tmux history so retries can
+                # still require exact evidence that this is Flow's own draft.
+                text = self._capture_pane_text(target, start_line=-32768)
                 current_command = self._pane_current_command(target)
                 if (
-                    _looks_like_codex_prompt_ready(text, current_command=current_command)
+                    _is_codex_process_name(current_command)
                     and not _codex_working_seen(text)
+                    and not _looks_like_codex_trust_prompt(text, current_command=current_command)
+                    and not _codex_permission_prompt_reason(text, current_command=current_command)
+                    and not _codex_prompt_submission_failure_reason(text, current_command=current_command)
                     and (
                         _current_prompt_block_contains_request_id(text, request_id)
                         or _current_prompt_block_contains_paste_placeholder(text, len(prompt_text))
@@ -919,16 +961,22 @@ def _rollout_contains_launch_marker(path: Path, launch_marker: str) -> bool:
         payload = event.get("payload") or {}
         event_type = event.get("type")
         if event_type == "event_msg" and payload.get("type") == "user_message":
-            if launch_marker in str(payload.get("message") or ""):
+            if _message_contains_control_marker(str(payload.get("message") or ""), launch_marker):
                 return True
             continue
         if event_type == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
             content = payload.get("content") or []
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "input_text":
-                    if launch_marker in str(item.get("text") or ""):
+                    if _message_contains_control_marker(str(item.get("text") or ""), launch_marker):
                         return True
     return False
+
+
+def _message_contains_control_marker(message: str, launch_marker: str) -> bool:
+    """Match Flow's exact control line, not marker text quoted in a transcript."""
+    expected = f"marker: {launch_marker}"
+    return any(line.strip() == expected for line in message.splitlines())
 
 
 def _attach_env() -> dict[str, str]:
@@ -1062,9 +1110,11 @@ def _find_turn(
         for bucket_event in bucket:
             payload = bucket_event.get("payload") or {}
             if not candidate.get("request_id"):
-                request_id = _event_request_id(bucket_event)
-                if request_id:
-                    candidate["request_id"] = request_id
+                request_ids = _event_request_ids(bucket_event)
+                if current_request_id and current_request_id in request_ids:
+                    candidate["request_id"] = current_request_id
+                elif request_ids:
+                    candidate["request_id"] = request_ids[0]
             if (
                 bucket_event.get("type") == "response_item"
                 and payload.get("type") == "message"
@@ -1224,34 +1274,47 @@ def _request_acknowledged_at(
         timestamp = parse_utc(event.get("timestamp") or "")
         if started_after_dt is not None and timestamp is not None and timestamp < started_after_dt:
             continue
-        if _event_request_id(event) == request_id:
+        if request_id in _event_request_ids(event):
             return event.get("timestamp") or ""
     return ""
 
 
 def _event_request_id(event: dict[str, Any]) -> str:
+    request_ids = _event_request_ids(event)
+    return request_ids[0] if request_ids else ""
+
+
+def _event_request_ids(event: dict[str, Any]) -> list[str]:
     payload = event.get("payload") or {}
     event_type = event.get("type")
     if event_type == "event_msg" and payload.get("type") == "user_message":
-        return _extract_request_id(str(payload.get("message") or ""))
+        return _extract_request_ids(str(payload.get("message") or ""))
     if event_type == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
         content = payload.get("content") or []
+        request_ids: list[str] = []
         for item in content:
             if not isinstance(item, dict):
                 continue
             if item.get("type") == "input_text":
-                request_id = _extract_request_id(str(item.get("text") or ""))
-                if request_id:
-                    return request_id
-    return ""
+                request_ids.extend(_extract_request_ids(str(item.get("text") or "")))
+        return request_ids
+    return []
 
 
 def _extract_request_id(text: str) -> str:
+    request_ids = _extract_request_ids(text)
+    return request_ids[0] if request_ids else ""
+
+
+def _extract_request_ids(text: str) -> list[str]:
+    request_ids: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("request_id:"):
-            return stripped.split(":", 1)[1].strip()
-    return ""
+            request_id = stripped.split(":", 1)[1].strip()
+            if request_id:
+                request_ids.append(request_id)
+    return request_ids
 
 
 _ALWAYS_UNSET_SESSION_ENV = {
@@ -1518,6 +1581,7 @@ def _current_prompt_block_contains_paste_placeholder(text: str, char_count: int)
 
 
 _CODEX_PLACEHOLDER_PROMPTS = {
+    "Ask Codex to do anything",
     "Explain this codebase",
     "Summarize recent commits",
     "Implement {feature}",

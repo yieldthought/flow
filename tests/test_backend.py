@@ -483,7 +483,6 @@ def test_launch_codex_pastes_command_before_enter(monkeypatch: object) -> None:
     command = "codex " + ("--very-long-arg " * 500)
     calls: list[list[str]] = []
     loaded_buffers: list[str] = []
-    settled: list[tuple[str, str]] = []
 
     def fake_run_tmux(args: list[str], check: bool = True) -> SimpleNamespace:
         del check
@@ -494,26 +493,22 @@ def test_launch_codex_pastes_command_before_enter(monkeypatch: object) -> None:
 
     monkeypatch.setattr(backend, "_run_tmux", fake_run_tmux)
     monkeypatch.setattr(backend, "_launch_command", lambda _agent: command)
-    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: f"{target} shell prompt")
-    monkeypatch.setattr(
-        backend,
-        "_wait_for_paste_settle",
-        lambda target, baseline, *, baseline_cursor="": settled.append((target, baseline)),
-    )
+    monkeypatch.setattr("flow.backend.uuid.uuid4", lambda: SimpleNamespace(hex="launch123"))
+    monkeypatch.setattr(backend, "_wait_for_paste_settle", lambda *args, **kwargs: pytest.fail("launch should not wait for visible paste settle"))
 
-    backend._launch_codex({"tmux_session": "flow-agent-9"})
+    marker = backend._launch_codex({"tmux_session": "flow-agent-9"})
 
     assert calls[:3] == [
         ["send-keys", "-t", "flow-agent-9:0.0", "C-c"],
         ["send-keys", "-t", "flow-agent-9:0.0", "Enter"],
         ["send-keys", "-t", "flow-agent-9:0.0", "C-l"],
     ]
-    assert loaded_buffers == [command]
+    assert marker == "FLOW_CODEX_LAUNCH_launch123"
+    assert loaded_buffers == [f"printf '\\n{marker}\\n'; {command}"]
     assert ["paste-buffer", "-d", "-r", "-t", "flow-agent-9:0.0"] in calls
     assert ["paste-buffer", "-d", "-p", "-r", "-t", "flow-agent-9:0.0"] not in calls
     assert calls[-1] == ["send-keys", "-t", "flow-agent-9:0.0", "Enter"]
     assert all(command not in call for call in calls if call[:1] == ["send-keys"])
-    assert settled == [("flow-agent-9:0.0", "flow-agent-9:0.0 shell prompt")]
 
 
 def test_codex_session_finished_seen_matches_recent_resume_hint() -> None:
@@ -607,7 +602,7 @@ def test_submit_prompt_sends_single_enter(monkeypatch: object) -> None:
 
 def test_wait_for_paste_settle_accepts_cursor_movement_when_text_is_unchanged(monkeypatch: object) -> None:
     backend = CodexBackend()
-    cursors = iter(["20,4", "20,4"])
+    cursors = iter(["20,4"] * 10)
 
     monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "unchanged pane text")
     monkeypatch.setattr(backend, "_pane_cursor_position", lambda target: next(cursors))
@@ -649,46 +644,68 @@ def test_clear_prompt_input_sends_ctrl_c_and_waits_for_ready(monkeypatch: object
 def test_ensure_codex_prompt_ready_relaunches_dead_session(monkeypatch: object) -> None:
     backend = CodexBackend()
     launched: list[str] = []
-    waited_codex: list[tuple[str, float]] = []
+    waited_codex: list[tuple[str, float, str]] = []
     waited_prompt: list[str] = []
     agent = {"tmux_session": "flow-agent-9", "thread_id": "thread-123"}
 
     monkeypatch.setattr(backend, "_session_has_live_codex", lambda session: False)
-    monkeypatch.setattr(backend, "_launch_codex", lambda agent: launched.append(agent["tmux_session"]))
+    monkeypatch.setattr(
+        backend,
+        "_launch_codex",
+        lambda agent: (launched.append(agent["tmux_session"]), "launch-marker")[1],
+    )
     monkeypatch.setattr(
         backend,
         "_wait_for_codex_ready",
-        lambda session, timeout_seconds=120.0: waited_codex.append((session, timeout_seconds)),
+        lambda session, timeout_seconds=120.0, pane_launch_marker="": waited_codex.append(
+            (session, timeout_seconds, pane_launch_marker)
+        ),
     )
-    monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session: waited_prompt.append(session))
+    monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session, **_kwargs: waited_prompt.append(session))
 
     backend._ensure_codex_prompt_ready(agent, timeout_seconds=7.0)
 
     assert launched == ["flow-agent-9"]
-    assert waited_codex == [("flow-agent-9", 7.0)]
-    assert waited_prompt == []
+    assert waited_codex == [("flow-agent-9", 7.0, "launch-marker")]
+    assert waited_prompt == ["flow-agent-9"]
 
 
 def test_ensure_codex_prompt_ready_relaunches_after_ready_timeout(monkeypatch: object) -> None:
     backend = CodexBackend()
     live_results = iter([True, False])
     launched: list[str] = []
-    waited_codex: list[tuple[str, float]] = []
+    waited_codex: list[tuple[str, float, str]] = []
+    prompt_waits = 0
     agent = {"tmux_session": "flow-agent-9", "thread_id": "thread-123"}
 
     monkeypatch.setattr(backend, "_session_has_live_codex", lambda session: next(live_results))
-    monkeypatch.setattr(backend, "_wait_for_prompt_ready", lambda session: (_ for _ in ()).throw(RuntimeError("not ready")))
-    monkeypatch.setattr(backend, "_launch_codex", lambda agent: launched.append(agent["tmux_session"]))
+
+    def wait_for_prompt_ready(session: str, **_kwargs: object) -> None:
+        nonlocal prompt_waits
+        del session
+        prompt_waits += 1
+        if prompt_waits == 1:
+            raise RuntimeError("not ready")
+
+    monkeypatch.setattr(backend, "_wait_for_prompt_ready", wait_for_prompt_ready)
+    monkeypatch.setattr(
+        backend,
+        "_launch_codex",
+        lambda agent: (launched.append(agent["tmux_session"]), "launch-marker")[1],
+    )
     monkeypatch.setattr(
         backend,
         "_wait_for_codex_ready",
-        lambda session, timeout_seconds=120.0: waited_codex.append((session, timeout_seconds)),
+        lambda session, timeout_seconds=120.0, pane_launch_marker="": waited_codex.append(
+            (session, timeout_seconds, pane_launch_marker)
+        ),
     )
 
     backend._ensure_codex_prompt_ready(agent, timeout_seconds=7.0)
 
     assert launched == ["flow-agent-9"]
-    assert waited_codex == [("flow-agent-9", 7.0)]
+    assert waited_codex == [("flow-agent-9", 7.0, "launch-marker")]
+    assert prompt_waits == 2
 
 
 def test_clear_prompt_input_leaves_blank_composer_open(monkeypatch: object) -> None:
@@ -727,7 +744,7 @@ def test_clear_prompt_input_clears_placeholder_composer_line(monkeypatch: object
         return SimpleNamespace(stdout="")
 
     monkeypatch.setattr(backend, "_run_tmux", fake_run_tmux)
-    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "› Use /skills to list available skills\n\n  gpt-5.5 low")
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target: "› Ask Codex to do anything\n\n  gpt-5.6-sol xhigh")
     monkeypatch.setattr(backend, "_pane_current_command", lambda target: "codex")
     monkeypatch.setattr(
         backend,
@@ -763,6 +780,7 @@ def test_visible_prompt_content_returns_nonempty_prompt_text() -> None:
 
 
 def test_codex_placeholder_prompt_content_matches_known_rotating_hints() -> None:
+    assert _is_codex_placeholder_prompt_content("Ask Codex to do anything")
     assert _is_codex_placeholder_prompt_content("Use /skills to list available skills")
     assert _is_codex_placeholder_prompt_content("Find and fix a bug in @filename")
     assert not _is_codex_placeholder_prompt_content("[flow 1] stress-prompt-cycle")
@@ -1188,6 +1206,39 @@ def test_resolve_rollout_matches_marker_only_in_submitted_user_message(tmp_path:
     assert thread_id == "thread-right"
 
 
+def test_resolve_rollout_rejects_marker_quoted_in_approval_transcript(tmp_path: Path, monkeypatch: object) -> None:
+    codex_home = tmp_path / "codex-home"
+    sessions = codex_home / "sessions" / "2026" / "05" / "15"
+    sessions.mkdir(parents=True)
+    marker = "flow-agent-84-9a1b40cf"
+    transcript = sessions / "rollout-2026-05-15T10-40-55-thread-wrong.jsonl"
+    transcript.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": "thread-wrong"}},
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "user_message",
+                        "message": f"Approval transcript: 'launch_marker': '{marker}'",
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    now = time.time()
+    os.utime(transcript, (now, now))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    path, thread_id = CodexBackend()._resolve_rollout("", "", marker, "")
+
+    assert path == ""
+    assert thread_id == ""
+
+
 def test_find_turn_matches_request_id_before_task_started() -> None:
     events = [
         {
@@ -1287,6 +1338,73 @@ def test_find_turn_matches_current_completion_after_overlapping_turn_started() -
     assert turn["output_text"] == "Flow turn completed after another turn started."
 
 
+def test_wait_for_turn_start_retries_idle_long_prompt_using_full_pane_history(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    pane_text = """
+› [flow-control]
+  request_id: req-scrolled-out
+  [/flow-control]
+
+  terminal prompt tail that no longer shows its request id in the short capture
+
+  gpt-5.6-sol low
+""".strip()
+    submitted: list[str] = []
+    capture_start_lines: list[int] = []
+
+    def capture_pane_text(target: str, start_line: int = -80) -> str:
+        del target
+        capture_start_lines.append(start_line)
+        return pane_text
+
+    monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("", ""))
+    monkeypatch.setattr(backend, "_capture_pane_text", capture_pane_text)
+    monkeypatch.setattr(backend, "_pane_current_command", lambda target: "codex")
+    monkeypatch.setattr(backend, "_submit_prompt", lambda target: submitted.append(target))
+    monkeypatch.setattr("flow.backend._SUBMIT_RETRY_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr("flow.backend.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="prompt submission was not acknowledged"):
+        backend._wait_for_turn_start(  # noqa: SLF001
+            {"tmux_session": "flow-agent-9"},
+            started_after=parse_utc("2026-04-18T08:16:37Z"),
+            timeout_seconds=0.01,
+            request_id="req-scrolled-out",
+            prompt_text="x" * 2000,
+        )
+
+    assert submitted == ["flow-agent-9:0.0", "flow-agent-9:0.0"]
+    assert capture_start_lines[:2] == [-32768, -32768]
+
+
+def test_wait_for_turn_start_does_not_submit_idle_codex_placeholder(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    pane_text = """
+› Ask Codex to do anything
+
+  gpt-5.6-sol low
+""".strip()
+    submitted: list[str] = []
+
+    monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("", ""))
+    monkeypatch.setattr(backend, "_capture_pane_text", lambda target, start_line=-80: pane_text)
+    monkeypatch.setattr(backend, "_pane_current_command", lambda target: "codex")
+    monkeypatch.setattr(backend, "_submit_prompt", lambda target: submitted.append(target))
+    monkeypatch.setattr("flow.backend._SUBMIT_RETRY_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr("flow.backend.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="prompt submission was not acknowledged"):
+        backend._wait_for_turn_start(  # noqa: SLF001
+            {"tmux_session": "flow-agent-9"},
+            started_after=parse_utc("2026-04-18T08:16:37Z"),
+            timeout_seconds=0.01,
+            request_id="req-not-visible",
+            prompt_text="x" * 2000,
+        )
+
+    assert submitted == []
+
+
 def test_wait_for_turn_start_accepts_request_ack_without_task_start(monkeypatch: object) -> None:
     backend = CodexBackend()
     events = [
@@ -1345,6 +1463,71 @@ def test_wait_for_turn_start_matches_new_turn_after_request_id_event_arrives(mon
     assert observation.status == "running"
     assert observation.turn_id == "turn-2"
     assert observation.started_at == "2026-04-23T15:44:57.890Z"
+
+
+def test_wait_for_turn_start_matches_request_id_in_concatenated_prompt(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    events = [
+        {
+            "timestamp": "2026-06-30T08:45:56.504Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "turn-2"},
+        },
+        {
+            "timestamp": "2026-06-30T08:45:56.539Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": (
+                    "[flow-control]\nrequest_id: req-first\n[/flow-control]\n\n"
+                    "First prompt.[flow-control]\nrequest_id: req-second\n[/flow-control]\n\nSecond prompt."
+                ),
+            },
+        },
+    ]
+
+    monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("/tmp/fake.jsonl", "thread-9"))
+    monkeypatch.setattr("flow.backend._read_rollout_events", lambda path: events)
+
+    observation = backend._wait_for_turn_start(  # noqa: SLF001
+        {"tmux_session": "flow-agent-9"},
+        started_after=parse_utc("2026-06-30T08:45:56.000Z"),
+        timeout_seconds=0.2,
+        request_id="req-second",
+    )
+
+    assert observation.status == "running"
+    assert observation.turn_id == "turn-2"
+
+
+def test_wait_for_turn_start_accepts_later_request_ack_in_concatenated_prompt(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    events = [
+        {
+            "timestamp": "2026-06-30T08:45:56.539Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": (
+                    "[flow-control]\nrequest_id: req-first\n[/flow-control]\n\n"
+                    "First prompt.[flow-control]\nrequest_id: req-second\n[/flow-control]\n\nSecond prompt."
+                ),
+            },
+        }
+    ]
+
+    monkeypatch.setattr(backend, "_resolve_rollout", lambda *args, **kwargs: ("/tmp/fake.jsonl", "thread-9"))
+    monkeypatch.setattr("flow.backend._read_rollout_events", lambda path: events)
+
+    observation = backend._wait_for_turn_start(  # noqa: SLF001
+        {"tmux_session": "flow-agent-9"},
+        started_after=parse_utc("2026-06-30T08:45:56.000Z"),
+        timeout_seconds=0.2,
+        request_id="req-second",
+    )
+
+    assert observation.status == "running"
+    assert observation.started_at == "2026-06-30T08:45:56.539Z"
 
 
 def test_wait_for_turn_start_rejects_older_turn_without_request_ack(monkeypatch: object) -> None:
@@ -1553,8 +1736,8 @@ def test_ensure_session_relaunches_when_tmux_pane_is_not_running_codex(monkeypat
     monkeypatch.setattr(backend, "session_exists", lambda _agent: True)
     monkeypatch.setattr(backend, "_session_has_live_codex", lambda _session: False)
     monkeypatch.setattr(backend, "interrupt", lambda _agent: calls.append("interrupt"))
-    monkeypatch.setattr(backend, "_launch_codex", lambda _agent: calls.append("launch"))
-    monkeypatch.setattr(backend, "_wait_for_codex_ready", lambda _session: calls.append("wait"))
+    monkeypatch.setattr(backend, "_launch_codex", lambda _agent: (calls.append("launch"), "launch-marker")[1])
+    monkeypatch.setattr(backend, "_wait_for_codex_ready", lambda _session, **_kwargs: calls.append("wait"))
 
     result = backend.ensure_session(agent)
 
@@ -1620,6 +1803,134 @@ def test_wait_for_codex_ready_checks_ready_state_at_timeout_boundary(monkeypatch
     backend._wait_for_codex_ready("flow-agent-1", timeout_seconds=0.2)
 
 
+def test_wait_for_codex_ready_ignores_stale_prompt_before_current_launch_marker(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    marker = "FLOW_CODEX_LAUNCH_current"
+    stale_text = """
+╭────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.148.0)                         │
+│ model:     gpt-5.6 xhigh                           │
+╰────────────────────────────────────────────────────╯
+
+› Ask Codex to do anything
+
+  gpt-5.6 xhigh
+""".strip()
+    starting_text = f"{stale_text}\n$ printf '{marker}'; codex --no-alt-screen\n{marker}\n"
+    ready_text = f"""{starting_text}
+╭────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.148.0)                         │
+│ model:     gpt-5.6 xhigh                           │
+╰────────────────────────────────────────────────────╯
+
+› Ask Codex to do anything
+
+  gpt-5.6 xhigh
+""".strip()
+    captures = iter([stale_text, starting_text, *([ready_text] * 10)])
+
+    def fake_run(args: list[str], capture_output: bool = True, text: bool = True) -> SimpleNamespace:
+        del capture_output, text
+        if args[:3] == ["tmux", "display-message", "-p"]:
+            return SimpleNamespace(returncode=0, stdout="node\n")
+        if args[:3] == ["tmux", "capture-pane", "-pt"]:
+            return SimpleNamespace(returncode=0, stdout=next(captures))
+        raise AssertionError(f"unexpected subprocess args: {args}")
+
+    monkeypatch.setattr("flow.backend.subprocess.run", fake_run)
+    monkeypatch.setattr("flow.backend.time.sleep", lambda _seconds: None)
+
+    backend._wait_for_codex_ready(
+        "flow-agent-1",
+        timeout_seconds=1.0,
+        pane_launch_marker=marker,
+    )
+
+
+def test_wait_for_codex_ready_keeps_checking_after_launch_marker_scrolls_out(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    marker = "FLOW_CODEX_LAUNCH_current"
+    marker_text = f"$ codex\n{marker}\n"
+    ready_text = """
+╭────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.148.0)                         │
+│ model:     gpt-5.6-sol low                         │
+╰────────────────────────────────────────────────────╯
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol low
+""".strip()
+    captures = iter([marker_text, *([ready_text] * 10)])
+    capture_start_lines: list[str] = []
+
+    def fake_run(args: list[str], capture_output: bool = True, text: bool = True) -> SimpleNamespace:
+        del capture_output, text
+        if args[:3] == ["tmux", "display-message", "-p"]:
+            return SimpleNamespace(returncode=0, stdout="codex\n")
+        if args[:3] == ["tmux", "capture-pane", "-pt"]:
+            capture_start_lines.append(args[-1])
+            return SimpleNamespace(returncode=0, stdout=next(captures))
+        raise AssertionError(f"unexpected subprocess args: {args}")
+
+    monkeypatch.setattr("flow.backend.subprocess.run", fake_run)
+    monkeypatch.setattr("flow.backend.time.sleep", lambda _seconds: None)
+
+    backend._wait_for_codex_ready(
+        "flow-agent-1",
+        timeout_seconds=1.0,
+        pane_launch_marker=marker,
+    )
+
+    assert capture_start_lines == ["-", *(["-80"] * 10)]
+
+
+def test_wait_for_codex_ready_confirms_trust_prompt_with_carriage_return(monkeypatch: object) -> None:
+    backend = CodexBackend()
+    trust_text = """
+> You are in /tmp/agent-flows
+
+  Do you trust the contents of this directory?
+
+› 1. Yes, continue
+  2. No, quit
+
+  Press enter to continue
+""".strip()
+    ready_text = """
+╭────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.148.0)                         │
+│ model:     gpt-5.6-sol low                         │
+╰────────────────────────────────────────────────────╯
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol low
+""".strip()
+    captures = iter([trust_text, *([ready_text] * 10)])
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], capture_output: bool = True, text: bool = True) -> SimpleNamespace:
+        del capture_output, text
+        if args[:3] == ["tmux", "display-message", "-p"]:
+            return SimpleNamespace(returncode=0, stdout="codex\n")
+        if args[:3] == ["tmux", "capture-pane", "-pt"]:
+            return SimpleNamespace(returncode=0, stdout=next(captures))
+        raise AssertionError(f"unexpected subprocess args: {args}")
+
+    monkeypatch.setattr("flow.backend.subprocess.run", fake_run)
+    monkeypatch.setattr("flow.backend.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        backend,
+        "_run_tmux",
+        lambda args, check=True: (calls.append(list(args)), SimpleNamespace(stdout=""))[1],
+    )
+
+    backend._wait_for_codex_ready("flow-agent-1", timeout_seconds=1.0)
+
+    assert calls == [["send-keys", "-t", "flow-agent-1:0.0", "1", "C-m"]]
+
+
 def test_wait_for_codex_ready_waits_for_visible_prompt_not_just_banner(monkeypatch: object) -> None:
     backend = CodexBackend()
     banner_only = """
@@ -1642,7 +1953,7 @@ def test_wait_for_codex_ready_waits_for_visible_prompt_not_just_banner(monkeypat
 
   gpt-5.4 low · /tmp/flow-ready
 """.strip()
-    capture_values = iter([banner_only, banner_only, ready_text, ready_text])
+    capture_values = iter([banner_only, banner_only, *([ready_text] * 10)])
     current_time = datetime(2026, 4, 18, 12, 0, 0, tzinfo=timezone.utc)
     time_values = iter(
         [

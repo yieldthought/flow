@@ -907,6 +907,78 @@ done:
     assert events[1]["reason"] == "Paused by alice"
 
 
+def test_runtime_resume_keeps_tracking_paused_running_turn(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+first:
+  start: true
+  prompt: one
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+
+    class PausedRunningBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.complete = False
+
+        def poll_turn(self, agent: dict[str, Any]) -> TurnObservation:
+            if not self.complete:
+                return TurnObservation(status="running")
+            return TurnObservation(
+                status="completed",
+                thread_id=f"thread-{agent_id}",
+                rollout_path=f"/tmp/fake-{agent_id}.jsonl",
+                turn_id="turn-1",
+                started_at=agent["current_turn_started_at"],
+                ended_at=format_utc(utc_now()),
+                output_text="worked",
+                raw_output="worked",
+            )
+
+    backend = PausedRunningBackend()
+    runtime = Runtime(backend=backend)
+    runtime.tick(conn)
+    original = dict(get_agent(conn, agent_id))
+
+    enqueue_command(conn, agent_id, "pause", {})
+    conn.commit()
+    runtime.tick(conn)
+
+    enqueue_command(conn, agent_id, "resume", {})
+    conn.commit()
+    runtime.tick(conn)
+
+    resumed = dict(get_agent(conn, agent_id))
+    assert resumed["substate"] == "normal"
+    assert resumed["phase"] == "resume_state"
+    assert resumed["current_turn_started_at"] == original["current_turn_started_at"]
+    assert resumed["current_turn_kind"] == "state_prompt"
+    assert len(backend.prompts[agent_id]) == 1
+
+    backend.complete = True
+    runtime.tick(conn)
+
+    completed = dict(get_agent(conn, agent_id))
+    assert completed["phase"] == "evaluate_transition"
+    assert completed["current_turn_started_at"] == ""
+    assert len(backend.prompts[agent_id]) == 1
+
+
 def test_graceful_shutdown_suspends_agents(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
     conn = connect()
@@ -941,6 +1013,49 @@ done:
     runtime.tick(conn)
     agent = dict(get_agent(conn, agent_id))
     assert agent["phase"] == "suspended"
+
+
+def test_graceful_shutdown_does_not_wait_on_failed_needs_help_submission(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+first:
+  start: true
+  prompt: one
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+    backend = FakeBackend()
+    runtime = Runtime(backend=backend)
+    runtime.tick(conn)
+    update_agent(conn, agent_id, substate="needs_help", phase="paused")
+    set_meta(conn, "shutdown_mode", "graceful")
+    set_meta(conn, "shutdown_flow", "")
+    conn.commit()
+
+    runtime.tick(conn)
+
+    agent = dict(get_agent(conn, agent_id))
+    assert agent["phase"] == "suspended"
+    assert agent["current_turn_started_at"] == ""
+    assert backend.sessions[agent_id] is False
+    assert runtime._running is False  # noqa: SLF001
 
 
 def test_runtime_wait_state_delays_then_auto_advances(tmp_path: Path, monkeypatch: Any) -> None:
@@ -1434,6 +1549,105 @@ done:
     assert agent["status_message"] == "Needs help"
     assert events[-1]["kind"] == "needs_help"
     assert events[-1]["reason"] == "prompt submission was not acknowledged"
+
+
+def test_runtime_records_repeated_poll_needs_help_after_resume(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+
+    class BrokenPollBackend(FakeBackend):
+        def poll_turn(self, agent: dict[str, Any]) -> TurnObservation:
+            del agent
+            raise RuntimeError("Codex prompt input did not become ready")
+
+    runtime = Runtime(backend=BrokenPollBackend())
+    runtime.tick(conn)
+    runtime.tick(conn)
+
+    enqueue_command(conn, agent_id, "resume", {})
+    conn.commit()
+    runtime.tick(conn)
+    runtime.tick(conn)
+
+    events = [dict(row) for row in list_agent_events(conn, agent_id)]
+    needs_help_events = [event for event in events if event["kind"] == "needs_help"]
+    assert [event["kind"] for event in events] == ["started", "needs_help", "resume", "needs_help"]
+    assert [event["reason"] for event in needs_help_events] == [
+        "Codex prompt input did not become ready",
+        "Codex prompt input did not become ready",
+    ]
+
+
+def test_runtime_resume_clears_failed_submitting_turn_before_retry(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("FLOW_HOME", str(tmp_path / ".flow"))
+    conn = connect()
+    init_db(conn)
+    flow_path = write_flow(
+        tmp_path / "flow.yaml",
+        """
+flow:
+  name: demo
+  version: 1
+  path: .
+
+check:
+  start: true
+  prompt: work
+  transitions:
+    - go: done
+
+done:
+  end: true
+""".strip(),
+    )
+    agent_id = create_runtime_agent(conn, flow_path, {})
+
+    class FailThenRunBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.send_count = 0
+
+        def send_prompt(self, agent: dict[str, Any], prompt: str, *, request_id: str = "") -> TurnObservation:
+            self.send_count += 1
+            if self.send_count == 1:
+                raise RuntimeError("Codex prompt input did not become ready")
+            return super().send_prompt(agent, prompt, request_id=request_id)
+
+    backend = FailThenRunBackend()
+    runtime = Runtime(backend=backend)
+    runtime.tick(conn)
+    failed = dict(get_agent(conn, agent_id))
+    assert failed["substate"] == "needs_help"
+    assert failed["current_turn_started_at"]
+
+    enqueue_command(conn, agent_id, "resume", {})
+    conn.commit()
+    runtime.tick(conn)
+
+    recovered = dict(get_agent(conn, agent_id))
+    assert backend.send_count == 2
+    assert recovered["phase"] == "working"
+    assert recovered["current_turn_kind"] == "resume_prompt"
 
 
 def test_runtime_moves_running_turn_permission_prompt_to_needs_help(tmp_path: Path, monkeypatch: Any) -> None:

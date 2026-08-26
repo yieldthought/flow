@@ -295,6 +295,21 @@ class Runtime:
             if not should_resume:
                 return
             fields = {"substate": "normal", "shutdown_mode": ""}
+            if agent.get("substate") == "needs_help" and agent.get("current_turn_started_at"):
+                # A prompt can fail while it is still marked as submitting.
+                # _enter_needs_help preserves those fields so a late rollout
+                # acknowledgement can be observed, but a human-requested
+                # resume must abandon that failed submission and send a fresh
+                # state prompt instead of polling it forever. An interaction
+                # pause, however, must retain its still-running turn.
+                fields.update(
+                    {
+                        "current_turn_id": "",
+                        "current_turn_kind": "",
+                        "current_turn_started_at": "",
+                        "current_request_id": "",
+                    }
+                )
             if child_wait is not None:
                 pending = [item["id"] for item in child_wait["pending"]]
                 if pending:
@@ -421,7 +436,7 @@ class Runtime:
 
         all_stopped = True
         for agent in targeted:
-            if agent["current_turn_started_at"]:
+            if agent["current_turn_started_at"] and agent["substate"] != "needs_help":
                 all_stopped = False
                 update_agent(conn, int(agent["id"]), shutdown_mode="graceful")
                 continue
@@ -429,6 +444,10 @@ class Runtime:
             update_agent(
                 conn,
                 int(agent["id"]),
+                current_turn_id="",
+                current_turn_kind="",
+                current_turn_started_at="",
+                current_request_id="",
                 shutdown_mode="",
                 phase="suspended",
             )
@@ -1078,7 +1097,11 @@ class Runtime:
 
     def _enter_needs_help(self, conn: Any, agent: dict[str, Any], reason: str) -> None:
         close_open_state_run(conn, int(agent["id"]))
-        if reason != str(agent.get("last_error") or ""):
+        latest = conn.execute(
+            "SELECT kind, reason FROM agent_events WHERE agent_id=? ORDER BY id DESC LIMIT 1",
+            (int(agent["id"]),),
+        ).fetchone()
+        if latest is None or latest["kind"] != "needs_help" or latest["reason"] != reason:
             record_agent_event(
                 conn,
                 int(agent["id"]),

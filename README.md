@@ -1,5 +1,11 @@
 # flow
 
+> Flow 2.0 is under active development behind the isolated `flow2` command.
+> It is a foreground, SDK-backed `.flow` interpreter with scratchpad-only
+> persistence. See [the V2 contract](docs/FLOW-2.0.md) and
+> [migration status](docs/FLOW-2.0-MIGRATION.md). The existing `flow` command
+> remains V1 until the catalog migration and cutover checks are complete.
+
 `flow` runs agents through flowchart-like workflows in the background. You can watch them and help if they need it. An simple flow:
 
 ```yaml

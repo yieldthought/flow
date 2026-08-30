@@ -1,0 +1,19 @@
+#!/usr/bin/env flow2
+flow:
+  name: flow-2-sdk-self-test
+  description: Harmless end-to-end check of the Flow 2.0 Codex SDK runtime.
+  version: 2
+  path: .
+  mode: workspace-write
+  thinking: low
+
+check:
+  start: true
+  prompt: |
+    This is a Flow 2.0 integration self-test. Do not use tools and do not read
+    or write files. Briefly state that the Codex SDK turn completed.
+  transitions:
+    - go: complete
+
+complete:
+  exit: 0

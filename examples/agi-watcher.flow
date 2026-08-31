@@ -1,0 +1,38 @@
+#!/usr/bin/env flow2
+flow:
+  name: agi-watcher
+  version: 2
+  mode: workspace-write
+  args:
+    site:
+      help: news site to monitor
+
+check-news:
+  start: true
+  thinking: low
+  prompt: Check {{site}} to see if there is a story about AGI being achieved.
+  transitions:
+    - if: there is credible news that AGI has been achieved
+      go: investigate
+    - if: there are no stories about AGI being achieved
+      wait: 60m
+      go: check-news
+
+investigate:
+  thinking: xhigh
+  prompt: |
+    Read the article, comments, and any sources you can find.
+    Decide whether AGI really has been achieved or if this is just hype.
+  transitions:
+    - if: AGI really has been achieved
+      go: its-over
+    - if: AGI has probably not been achieved
+      go: check-news
+
+its-over:
+  exit: 0
+  mode: yolo
+  prompt: |
+    Use Pushover to send the user a short summary of the situation.
+    Then send another notification reminding them to go outside, lie on the
+    grass, and enjoy the sun.

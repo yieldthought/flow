@@ -1,0 +1,15 @@
+#!/usr/bin/env flow2
+flow:
+  name: hello-child
+  version: 2
+  description: Say hello in the scratchpad and finish cleanly. Trivial child for hello-parent.
+  thinking: low
+
+greet:
+  start: true
+  prompt: Write a single line "hello from child" in the scratchpad body.
+  transitions:
+    - go: done
+
+done:
+  exit: 0

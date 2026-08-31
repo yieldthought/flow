@@ -1,0 +1,36 @@
+#!/usr/bin/env flow2
+flow:
+  name: hello-parent
+  version: 2
+  description: Run hello-child synchronously and consume its JSON final event.
+  thinking: low
+  args:
+    child_flow:
+      help: path to the hello-child Flow 2.0 file
+      default: examples/hello-child.flow
+
+run-child:
+  start: true
+  prompt: |
+    Run the child as a synchronous foreground subprocess:
+
+    `flow2 --json {{child_flow}}`
+
+    Wait for it to exit. Parse the last JSON line and record its `state`,
+    `exit_code`, `scratchpad`, `thread`, `outcome`, and `resumable` fields in
+    this flow's scratchpad under `## Child outcome`. A nonzero exit from 1
+    through 63 is an authored child outcome, not a Flow runtime failure.
+
+    If the child exits 70, 75, 130, or 143, preserve its scratchpad and thread
+    and choose `needs-help`; do not launch a replacement child.
+  transitions:
+    - if: the child final event has state done and exit code 0
+      go: done
+    - if: the child reached an authored nonzero terminal outcome
+      go: child-failed
+
+done:
+  exit: 0
+
+child-failed:
+  exit: 2

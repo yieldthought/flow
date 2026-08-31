@@ -125,3 +125,19 @@ again:
 """,
     )
     assert any("reachable terminal" in error for error in validate_flow(load_flow(endless)).errors)
+
+
+def test_all_v2_examples_validate() -> None:
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    paths = sorted(examples.glob("*.flow"))
+
+    assert {path.name for path in paths} == {
+        "agi-watcher.flow",
+        "ci-notify.flow",
+        "hello-child.flow",
+        "hello-parent.flow",
+        "sdk-self-test.flow",
+    }
+    for path in paths:
+        result = validate_flow(load_flow(path))
+        assert result.errors == (), f"{path.name}: {result.errors}"

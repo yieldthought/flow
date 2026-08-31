@@ -1,0 +1,34 @@
+#!/usr/bin/env flow2
+flow:
+  name: ci-notify
+  version: 2
+  args:
+    run_url:
+      help: GitHub Actions run URL
+
+check:
+  thinking: low
+  start: true
+  prompt: Inspect the CI run at {{run_url}}.
+  transitions:
+    - if: the run is still running
+      wait: 10m
+      go: check
+    - if: the run passed
+      go: notify-pass
+    - if: the run failed
+      go: investigate
+
+notify-pass:
+  prompt: Send a success notification via Pushover naming the run.
+  transitions:
+    - go: done
+
+investigate:
+  thinking: xhigh
+  prompt: Investigate the failure and send a very concise report via Pushover.
+  transitions:
+    - go: done
+
+done:
+  exit: 0

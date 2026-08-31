@@ -109,3 +109,21 @@ event supplies state, exit code, scratchpad, and thread. Parents do not own or
 release resources acquired by children. Remote runs are ordinary foreground
 commands over SSH; machine consumers should use `--json`. Resume must happen on
 the host and under the `CODEX_HOME` that owns the Codex thread.
+
+## Examples
+
+Executable V2 examples live beside the original V1 YAML examples:
+
+- `examples/agi-watcher.flow`: arguments, polling, waits, and a terminal action
+- `examples/ci-notify.flow`: success and failure routing into one successful exit
+- `examples/hello-child.flow`: a minimal successful child
+- `examples/hello-parent.flow`: synchronous child composition through JSON Lines
+- `examples/sdk-self-test.flow`: harmless real SDK integration check
+
+From the repository root:
+
+```bash
+flow2 validate examples/*.flow
+flow2 examples/hello-child.flow
+flow2 examples/hello-parent.flow
+```

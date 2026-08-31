@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import json
 import os
 import socket
@@ -27,6 +28,15 @@ from .scratchpad import (
     repair_scratchpad,
 )
 from .spec import discover_catalog, load_flow, parse_arguments, render_flow, validate_flow
+
+
+ENTER_ALTERNATE_SCREEN = "\x1b[?1049h"
+LEAVE_ALTERNATE_SCREEN = "\x1b[?1049l"
+HIDE_CURSOR = "\x1b[?25l"
+SHOW_CURSOR = "\x1b[?25h"
+CLEAR_SCREEN = "\x1b[2J"
+CURSOR_HOME = "\x1b[H"
+CLEAR_TO_END = "\x1b[J"
 
 
 class UsageError(ValueError):
@@ -259,14 +269,22 @@ def _top(argv: list[str]) -> int:
     if not sys.stdout.isatty():
         print_processes(discover_running_flows(), json_output=False, stream=sys.stdout)
         return 0
+    stream = sys.stdout
+    stream.write(ENTER_ALTERNATE_SCREEN + HIDE_CURSOR + CLEAR_SCREEN + CURSOR_HOME)
+    stream.flush()
     try:
         while True:
-            print("\x1b[2J\x1b[H", end="")
-            print(f"Flow 2.0 top  {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            print_processes(discover_running_flows(), json_output=False, stream=sys.stdout)
+            frame = io.StringIO()
+            print(f"Flow 2.0 top  {time.strftime('%Y-%m-%d %H:%M:%S')}\n", file=frame)
+            print_processes(discover_running_flows(), json_output=False, stream=frame)
+            stream.write(CURSOR_HOME + frame.getvalue() + CLEAR_TO_END)
+            stream.flush()
             time.sleep(args.interval)
     except KeyboardInterrupt:
         return 0
+    finally:
+        stream.write(SHOW_CURSOR + LEAVE_ALTERNATE_SCREEN)
+        stream.flush()
 
 
 def _load_valid_flow(path: str):

@@ -41,3 +41,24 @@ def test_human_event_labels_share_one_visible_column(monkeypatch: pytest.MonkeyP
         assert visible[detail_column:] == reporter._detail(kind, fields)
 
     assert HUMAN_LABEL_WIDTH == len("interrupted")
+
+
+def test_resumed_start_is_explicit_about_checkpoint_and_thread() -> None:
+    reporter = Reporter(stream=io.StringIO())
+
+    line = reporter._human_line(
+        "start",
+        {
+            "flow": "agi-watcher",
+            "state": "check-news",
+            "phase": "transition_wait",
+            "ready_at": "2026-08-31T12:45:29Z",
+            "thread": "01a057a3-1f6f-7ac3-8680-938f412d360f",
+            "resumed": True,
+        },
+    )
+
+    assert line == (
+        "[00:00] resume      agi-watcher at check-news "
+        "(waiting until 2026-08-31T12:45:29Z; thread 01a057a3)"
+    )

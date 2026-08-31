@@ -81,7 +81,8 @@ class Reporter:
         return f"[{seconds // 60:02d}:{seconds % 60:02d}]"
 
     def _human_line(self, kind: str, fields: dict[str, Any]) -> str:
-        label = f"{kind.replace('_', ' '):<{HUMAN_LABEL_WIDTH}}"
+        display_kind = "resume" if kind == "start" and fields.get("resumed") else kind.replace("_", " ")
+        label = f"{display_kind:<{HUMAN_LABEL_WIDTH}}"
         colour = {
             "start": "36",
             "state": "34",
@@ -101,6 +102,14 @@ class Reporter:
     @staticmethod
     def _detail(kind: str, fields: dict[str, Any]) -> str:
         if kind == "start":
+            if fields.get("resumed"):
+                phase = str(fields.get("phase") or "unknown").replace("_", " ")
+                ready_at = str(fields.get("ready_at") or "")
+                if phase in {"state wait", "transition wait"} and ready_at:
+                    phase = f"waiting until {ready_at}"
+                thread = str(fields.get("thread") or "")
+                thread_detail = f"; thread {thread[:8]}" if thread else ""
+                return f"{fields.get('flow')} at {fields.get('state')} ({phase}{thread_detail})"
             return f"{fields.get('flow')} -> {fields.get('state')}"
         if kind == "state":
             return str(fields.get("state", ""))

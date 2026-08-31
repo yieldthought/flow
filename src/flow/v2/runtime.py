@@ -67,6 +67,7 @@ class FlowRuntime:
                 flow=self.flow.name,
                 state=self.metadata["state"],
                 phase=self.metadata["phase"],
+                ready_at=self.metadata.get("ready_at", ""),
                 scratchpad=self.scratchpad,
                 thread=thread,
                 resumed=self.resuming,

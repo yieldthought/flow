@@ -11,6 +11,20 @@ from datetime import datetime, timezone
 from typing import Any, TextIO
 
 
+HUMAN_EVENT_KINDS = (
+    "start",
+    "state",
+    "transition",
+    "activity",
+    "waiting",
+    "needs_help",
+    "final",
+    "error",
+    "interrupted",
+)
+HUMAN_LABEL_WIDTH = max(len(kind.replace("_", " ")) for kind in HUMAN_EVENT_KINDS)
+
+
 class Reporter:
     def __init__(
         self,
@@ -53,7 +67,7 @@ class Reporter:
         self._last_activity = now
         if not self.json_output:
             width = max(20, shutil.get_terminal_size((100, 24)).columns)
-            prefix = f"{self._stamp()} activity  "
+            prefix = f"{self._stamp()} {'activity':<{HUMAN_LABEL_WIDTH}} "
             available = max(8, width - len(prefix))
             if len(summary) > available:
                 summary = summary[: max(1, available - 3)] + "..."
@@ -67,7 +81,7 @@ class Reporter:
         return f"[{seconds // 60:02d}:{seconds % 60:02d}]"
 
     def _human_line(self, kind: str, fields: dict[str, Any]) -> str:
-        label = kind.replace("_", " ")
+        label = f"{kind.replace('_', ' '):<{HUMAN_LABEL_WIDTH}}"
         colour = {
             "start": "36",
             "state": "34",
@@ -82,7 +96,7 @@ class Reporter:
         if self._colour:
             label = f"\x1b[{colour}m{label}\x1b[0m"
         detail = self._detail(kind, fields)
-        return f"{self._stamp()} {label:<18} {detail}".rstrip()
+        return f"{self._stamp()} {label} {detail}".rstrip()
 
     @staticmethod
     def _detail(kind: str, fields: dict[str, Any]) -> str:

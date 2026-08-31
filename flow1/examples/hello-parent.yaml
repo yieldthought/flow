@@ -6,8 +6,8 @@ flow:
 launch:
   start: true
   prompt: |
-    Run `flow catalog` and confirm a flow named "hello-child" is listed.
-    Start it using `flow start <path-to-hello-child.yaml>`. The command will
+    Run `flow1 catalog` and confirm a flow named "hello-child" is listed.
+    Start it using `flow1 start <path-to-hello-child.yaml>`. The command will
     print the new agent id - remember it.
     When the runtime asks you for a transition or terminal action, pick
     `wait-for-child` with that id as your only `child_ids` entry.

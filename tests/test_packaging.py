@@ -29,3 +29,5 @@ def test_flow_2_examples_use_the_canonical_shebang() -> None:
 
     assert examples
     assert all(path.read_text(encoding="utf-8").startswith("#!/usr/bin/env flow\n") for path in examples)
+    assert not list((ROOT / "examples").glob("*.yaml"))
+    assert sorted((ROOT / "flow1" / "examples").glob("*.yaml"))

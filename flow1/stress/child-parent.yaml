@@ -15,7 +15,7 @@ launch-child:
     This is a flow stress test.
 
     Start the child flow with:
-    `FLOW_HOME="{{flow_home}}" flow start "{{child_flow}}"`
+    `FLOW_HOME="{{flow_home}}" flow1 start "{{child_flow}}"`
 
     Capture the new child agent id from the command output.
     Do not do anything else in this state.

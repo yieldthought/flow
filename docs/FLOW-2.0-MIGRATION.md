@@ -156,5 +156,5 @@ second supported design direction and may be removed after old runs and files
 have been retired.
 
 The complete historical documentation is available in the
-[Flow 1 archived guide](FLOW-1.md). The current behavior is defined by the
+[Flow 1 archived guide](../flow1/README.md). The current behavior is defined by the
 [main README](../README.md) and [Flow 2 runtime contract](FLOW-2.0.md).

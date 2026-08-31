@@ -34,6 +34,19 @@ def test_stress_suite_succeeds_for_clean_successes() -> None:
     assert flow_stress.suite_succeeded({"scenarios": [scenario(), scenario()]})
 
 
+def test_stress_harness_uses_the_flow1_archive() -> None:
+    flow_stress = load_flow_stress()
+
+    assert flow_stress.STRESS_DIR.name == "stress"
+    assert flow_stress.STRESS_DIR.parent.name == "flow1"
+    assert flow_stress.DEFAULT_FLOW_BIN.name == "flow1"
+    assert sorted(path.name for path in flow_stress.STRESS_DIR.glob("*.yaml")) == [
+        "child-parent.yaml",
+        "child-worker.yaml",
+        "prompt-cycle.yaml",
+    ]
+
+
 def test_stress_suite_fails_for_any_bad_scenario() -> None:
     flow_stress = load_flow_stress()
 

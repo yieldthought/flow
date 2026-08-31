@@ -4,7 +4,7 @@ flow:
   args:
     site:
       help: news site to monitor
-  
+
 check-news:
   start: true
   thinking: low

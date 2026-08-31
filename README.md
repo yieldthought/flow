@@ -290,4 +290,4 @@ the primary product. Do not build new automation around `flow1`.
 
 See [Migrating from Flow 1](docs/FLOW-2.0-MIGRATION.md) for the file and command
 changes. The complete pre-2.0 documentation is preserved as the
-[`Flow 1 archived guide`](docs/FLOW-1.md).
+[`Flow 1 archived guide`](flow1/README.md).

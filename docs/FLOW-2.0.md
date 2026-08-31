@@ -112,7 +112,8 @@ the host and under the `CODEX_HOME` that owns the Codex thread.
 
 ## Examples
 
-Executable V2 examples live beside the original V1 YAML examples:
+Executable Flow 2 examples live in `examples/`. Archived Flow 1 definitions
+live separately in `flow1/examples/`.
 
 - `examples/agi-watcher.flow`: arguments, polling, waits, and a terminal action
 - `examples/ci-notify.flow`: success and failure routing into one successful exit

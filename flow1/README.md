@@ -1,12 +1,11 @@
 # Flow 1 archived guide
 
-> This is the complete pre-2.0 README, preserved for temporary compatibility
-> users. The command shown throughout this historical guide was `flow`; on a
-> current installation invoke it as `flow1` instead. Flow 1 is no longer the
+> This is the complete pre-2.0 guide, preserved for temporary compatibility
+> users and updated to use the current `flow1` command. Flow 1 is no longer the
 > recommended runtime. See the [current README](../README.md) and
-> [migration guide](FLOW-2.0-MIGRATION.md) for Flow 2.
+> [migration guide](../docs/FLOW-2.0-MIGRATION.md) for Flow 2.
 
-`flow` runs agents through flowchart-like workflows in the background. You can watch them and help if they need it. An simple flow:
+`flow1` runs agents through flowchart-like workflows in the background. You can watch them and help if they need it. An simple flow:
 
 ```yaml
 flow:
@@ -49,16 +48,16 @@ its-over:
 Use it like this:
 
 ```bash
-$ flow start agi-watcher.yaml --site news.ycombinator.com
+$ flow1 start flow1/examples/agi-watcher.yaml --site news.ycombinator.com
 ```
 
 Monitor the situation:
 
 ```bash
-$ flow catalog
-$ flow list
-$ flow list --top
-$ flow top
+$ flow1 catalog
+$ flow1 list
+$ flow1 list --top
+$ flow1 top
 Runtime active | uptime 00:18:01 | active agents 3 | total agents 4 | cumulative agent time 00:11:18
 
 agi-watcher
@@ -71,9 +70,9 @@ agi-watcher
 Check what a specific agent has been up to:
 
 ```bash
-$ flow show 6
-$ flow show 6 --json
-$ flow show 6 --top
+$ flow1 show 6
+$ flow1 show 6 --json
+$ flow1 show 6 --top
 agi-watcher in ~/work/agent-flows (started 23:57 on Apr 1 | 0h 0m running, 0h 6m waiting)
 State check-news | Substate normal | Phase waiting
 Status Waiting until 2026-04-01T22:58:16Z
@@ -88,13 +87,13 @@ Events
 View and interact with any codex session directly in your terminal:
 
 ```bash
-$ flow view 6
+$ flow1 view 6
 ```
 
 View many agents in lots of little windows:
 
 ```bash
-$ flow view --all
+$ flow1 view --all
 ```
 
 You have complete control at all times, including pausing and resuming automation for an agent, interrupting it, moving to another state and more. Read the CLI overview for the details.
@@ -108,7 +107,7 @@ The main idea is simple:
 - the runtime moves the agent, waits, pauses, or asks for help as needed
 - every agent is running in a tmux session you can attach to and view or interact with if you have to
 
-`flow` is built for asynchronous work. You start agents, the runtime keeps them moving through a flowchart in the background, and you inspect or intervene only when you want to.
+`flow1` is built for asynchronous work. You start agents, the runtime keeps them moving through a flowchart in the background, and you inspect or intervene only when you want to.
 
 ## Principles
 
@@ -124,7 +123,7 @@ The main idea is simple:
 
 This repository includes local Codex skills in `.agents/skills/`. They are guidance for agents working with this repo, not runtime configuration.
 
-- `flows-compose` describes the standard pattern for delegating work to child flows with `flow start` and `wait-for-child`.
+- `flows-compose` describes the standard pattern for delegating work to child flows with `flow1 start` and `wait-for-child`.
 - `flow-dev` records the repo-specific development commands, test environment, and release steps.
 
 When you maintain flow definitions, prefer putting reusable operating patterns in skills and documentation instead of repeating long mechanical instructions in every YAML prompt. For agents running in another workspace, make sure the relevant skill is available in that workspace or in the user's global Codex skills.
@@ -143,9 +142,9 @@ Install the published package:
 python -m pip install flow-like-a-river
 ```
 
-The name `flow` was taken. Can you believe that?
+The package name remains `flow-like-a-river`.
 
-This installs the `flow` CLI command.
+Current releases install the compatibility command as `flow1`.
 
 Development setup in a fresh virtual environment:
 
@@ -161,11 +160,11 @@ pytest
 
 The runtime runs as a detached background process.
 
-- `flow init` starts it if needed
-- `flow start ...` also starts it automatically
-- `flow restart` gracefully stops it and starts it again
-- `flow shutdown` lets agents finish their current turn and then stops the runtime
-- `flow shutdown now` kills agents and tmux sessions immediately
+- `flow1 init` starts it if needed
+- `flow1 start ...` also starts it automatically
+- `flow1 restart` gracefully stops it and starts it again
+- `flow1 shutdown` lets agents finish their current turn and then stops the runtime
+- `flow1 shutdown now` kills agents and tmux sessions immediately
 
 State is stored in:
 
@@ -196,9 +195,9 @@ A flow file has:
 Top-level `flow:` fields:
 
 - `name`: flow name
-- `description`: human-readable summary shown in UI headers and `flow start <file> --help` (optional)
+- `description`: human-readable summary shown in UI headers and `flow1 start <file> --help` (optional)
 - `version`: of the flow file format (optional, currently always `1`)
-- `path`: initial working directory for new agents (optional, defaults to the current working directory where `flow start` is run)
+- `path`: initial working directory for new agents (optional, defaults to the current working directory where `flow1 start` is run)
 - `mode`: default Codex permissions mode (optional, defaults to `yolo`, other options are `danger-full-access`, `full-auto`, and `workspace-write`)
 - `thinking`: default flow reasoning effort (optional, default `xhigh`, other options are `high`, `medium` and `low`)
 - `fast`: default Codex fast mode toggle (optional, default `false`)
@@ -221,11 +220,11 @@ Transition fields:
 - `wait`: optional delay before entering the target state, e.g. "10m"
 - `go`: target state name
 
-Placeholders like `{{repo}}` can appear in strings. Every placeholder must be declared in `flow.args`, and those declarations become CLI arguments at `flow start` time.
+Placeholders like `{{repo}}` can appear in strings. Every placeholder must be declared in `flow.args`, and those declarations become CLI arguments at `flow1 start` time.
 
 ## Catalog and Status JSON
 
-`flow catalog` exposes the flows an agent can discover and reuse.
+`flow1 catalog` exposes the flows an agent can discover and reuse.
 
 By default it searches, in order:
 
@@ -239,17 +238,17 @@ Directories are searched recursively for `*.yaml` and `*.yml` files. Only flows 
 Useful forms:
 
 ```bash
-flow catalog
-flow catalog --format json
-flow catalog --broken
-flow show 17 --json
+flow1 catalog
+flow1 catalog --format json
+flow1 catalog --broken
+flow1 show 17 --json
 ```
 
-`flow show --json` emits a compact machine-readable status snapshot, including the current phase, args, scratchpad path, latest event, and child-wait details when the agent is parked on child flows.
+`flow1 show --json` emits a compact machine-readable status snapshot, including the current phase, args, scratchpad path, latest event, and child-wait details when the agent is parked on child flows.
 
 ### JSON contract
 
-The `flow show --json` shape is fixed. Machine clients should rely on these rules:
+The `flow1 show --json` shape is fixed. Machine clients should rely on these rules:
 
 - `phase` is one of `enter_state`, `resume_state`, `continue_state`, `evaluate_transition`, `evaluate_terminal`, `submitting`, `working`, `waiting`, `waiting_children`, `needs_help`, `interaction`, `finished`, `stopped`.
 - `end_state` is populated only when the agent finished by reaching a flow-declared end state. It is `null` when the agent is still running, paused, or was stopped.
@@ -270,9 +269,9 @@ Flows can launch other flows without any YAML composition syntax.
 
 The intended pattern is:
 
-1. Run `flow catalog` to discover an existing flow that matches the long-running subtask.
+1. Run `flow1 catalog` to discover an existing flow that matches the long-running subtask.
 2. Check your scratchpad or current agent status for an already-active child doing the same work, and avoid starting duplicates.
-3. Run `flow start ...` from the agent turn and capture the child agent id.
+3. Run `flow1 start ...` from the agent turn and capture the child agent id.
 4. Record the child id, flow name, purpose, and key args in the parent scratchpad.
 5. When the runtime asks for a transition or terminal action and the parent needs the result before continuing, return `wait-for-child` with one or more child ids in `child_ids`.
 6. The parent parks in `waiting_children` and wakes in the same state once every named child reaches an end state, is stopped, or becomes unknown.
@@ -369,7 +368,7 @@ Useful patterns:
 If you want to cancel a wait early:
 
 ```bash
-flow wake <agent-id>
+flow1 wake <agent-id>
 ```
 
 `wake` only clears the timer. It does not resume an agent that is paused in `interaction` or `needs-help`.
@@ -379,51 +378,51 @@ flow wake <agent-id>
 Check that the installed flow/Codex/tmux integration can run a tiny end-to-end agent flow using your current user environment:
 
 ```bash
-flow self-test
+flow1 self-test
 ```
 
 Validate one or more flow files:
 
 ```bash
-flow validate examples/agi-watcher.yaml examples/ci-notify.yaml
+flow1 validate flow1/examples/agi-watcher.yaml flow1/examples/ci-notify.yaml
 ```
 
 Start an agent:
 
 ```bash
-flow start examples/agi-watcher.yaml --site news.ycombinator.com
+flow1 start flow1/examples/agi-watcher.yaml --site news.ycombinator.com
 ```
 
 If the flow has more than one start state:
 
 ```bash
-flow start my-flow.yaml start-state-name --path ~/work/repo
+flow1 start my-flow.yaml start-state-name --path ~/work/repo
 ```
 
 List active and archived agents:
 
 ```bash
-flow list
-flow list agi-watcher
-flow list --top
+flow1 list
+flow1 list agi-watcher
+flow1 list --top
 ```
 
 Open the live dashboard of active and recently finished agents:
 
 ```bash
-flow top
-flow top agi-watcher
-flow top --recent 4h
+flow1 top
+flow1 top agi-watcher
+flow1 top --recent 4h
 ```
 
 Show one agent in detail:
 
 ```bash
-flow show 12
-flow show 12 --top
+flow1 show 12
+flow1 show 12 --top
 ```
 
-`flow show` displays:
+`flow1 show` displays:
 
 - flow name and working path
 - start time
@@ -435,62 +434,62 @@ flow show 12 --top
 - args
 - a timestamped event log
 
-`flow top` shows the `flow list` summary for active agents plus agents that finished recently, with a `Recent Events` section underneath. By default the recent window is `1h`.
+`flow1 top` shows the `flow1 list` summary for active agents plus agents that finished recently, with a `Recent Events` section underneath. By default the recent window is `1h`.
 
-With `--top`, `flow list` and `flow show`, and with `flow top`, the screen clears and redraws every five seconds. Press `space` to refresh immediately and `q` to exit.
+With `--top`, `flow1 list` and `flow1 show`, and with `flow1 top`, the screen clears and redraws every five seconds. Press `space` to refresh immediately and `q` to exit.
 
-If `flow top` is run without a terminal on stdin or stdout, it prints one full dashboard snapshot and exits instead of entering the live redraw loop.
+If `flow1 top` is run without a terminal on stdin or stdout, it prints one full dashboard snapshot and exits instead of entering the live redraw loop.
 
 View live tmux sessions:
 
 ```bash
-flow view 12
-flow view 12 15 18
-flow view --all
+flow1 view 12
+flow1 view 12 15 18
+flow1 view --all
 ```
 
-With multiple ids, `flow view` opens a tiled tmux dashboard with one read-only pane per agent.
+With multiple ids, `flow1 view` opens a tiled tmux dashboard with one read-only pane per agent.
 
 Pause, interrupt, and resume automation:
 
 ```bash
-flow pause 12
-flow interrupt 12
-flow resume 12
+flow1 pause 12
+flow1 interrupt 12
+flow1 resume 12
 ```
 
-- `flow pause`: pause automation without sending `Ctrl-C`; if Codex is already working on a turn, that turn is allowed to finish naturally
-- `flow interrupt`: pause automation and also send `Ctrl-C` to the live Codex session
-- `flow resume`: leave `interaction` or `needs-help` and let automation continue
+- `flow1 pause`: pause automation without sending `Ctrl-C`; if Codex is already working on a turn, that turn is allowed to finish naturally
+- `flow1 interrupt`: pause automation and also send `Ctrl-C` to the live Codex session
+- `flow1 resume`: leave `interaction` or `needs-help` and let automation continue
 
 Move or stop an agent:
 
 ```bash
-flow move 12 investigate
-flow resume 12
-flow stop 12
-flow stop 12 done
+flow1 move 12 investigate
+flow1 resume 12
+flow1 stop 12
+flow1 stop 12 done
 ```
 
-- `flow move`: move the agent to another state and leave it paused; run
-  `flow resume` when you want the target state to start. Moving a finished
+- `flow1 move`: move the agent to another state and leave it paused; run
+  `flow1 resume` when you want the target state to start. Moving a finished
   agent resurrects it from the selected state.
-- `flow stop`: stop the agent immediately, optionally marking it as a specific
+- `flow1 stop`: stop the agent immediately, optionally marking it as a specific
   terminal state
 
 Delete an archived agent entirely:
 
 ```bash
-flow delete 12
+flow1 delete 12
 ```
 
 Manage the runtime:
 
 ```bash
-flow init
-flow restart
-flow shutdown
-flow shutdown now
+flow1 init
+flow1 restart
+flow1 shutdown
+flow1 shutdown now
 ```
 
 ## Agent states you will see
@@ -513,20 +512,20 @@ Other useful runtime phases:
 
 ## Diagnostics
 
-`flow list` includes runtime diagnostics before the state list when relevant.
+`flow1 list` includes runtime diagnostics before the state list when relevant.
 
 It can show:
 
 - daemon crash details if the runtime exited with an error
-- new runtime warnings and errors since the last time you ran `flow list`
+- new runtime warnings and errors since the last time you ran `flow1 list`
 - agent-level `error` and `needs-help` events
 
 This is driven by structured runtime diagnostics, not just raw log scraping.
 
 ## Example files
 
-- `examples/agi-watcher.yaml`
-- `examples/ci-notify.yaml`
+- `flow1/examples/agi-watcher.yaml`
+- `flow1/examples/ci-notify.yaml`
 
 The examples cover:
 
@@ -541,46 +540,46 @@ The examples cover:
 Validate a flow:
 
 ```bash
-flow validate examples/agi-watcher.yaml
+flow1 validate flow1/examples/agi-watcher.yaml
 ```
 
 Start an agent:
 
 ```bash
-flow start examples/agi-watcher.yaml --site news.ycombinator.com
+flow1 start flow1/examples/agi-watcher.yaml --site news.ycombinator.com
 ```
 
 Watch progress:
 
 ```bash
-flow list
-flow list --top
-flow show 1
-flow show 1 --top
-flow view 1
+flow1 list
+flow1 list --top
+flow1 show 1
+flow1 show 1 --top
+flow1 view 1
 ```
 
 Intervene if needed:
 
 ```bash
-flow pause 1
-flow interrupt 1
-flow resume 1
-flow wake 1
-flow move 1 investigate-failure
-flow resume 1
+flow1 pause 1
+flow1 interrupt 1
+flow1 resume 1
+flow1 wake 1
+flow1 move 1 investigate-failure
+flow1 resume 1
 ```
 
 Restart the runtime after code changes:
 
 ```bash
-flow restart
+flow1 restart
 ```
 
 Stop everything cleanly:
 
 ```bash
-flow shutdown
+flow1 shutdown
 ```
 
 ## Notes
@@ -590,4 +589,4 @@ flow shutdown
 - A state can only have one unconditional transition, and it must be last.
 - States without transitions must set `end: true` explicitly.
 - Relative paths and `~` in `flow.path` are expanded to absolute paths.
-- Absolute and relative times in `flow show` use your local timezone for display.
+- Absolute and relative times in `flow1 show` use your local timezone for display.

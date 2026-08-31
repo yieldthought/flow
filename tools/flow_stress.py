@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone stress harness for the real flow runtime/Codex/tmux stack."""
+"""Standalone stress harness for the legacy Flow 1 runtime/Codex/tmux stack."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-STRESS_DIR = REPO_ROOT / "stress"
-DEFAULT_FLOW_BIN = REPO_ROOT / ".venv" / "bin" / "flow"
+STRESS_DIR = REPO_ROOT / "flow1" / "stress"
+DEFAULT_FLOW_BIN = REPO_ROOT / ".venv" / "bin" / "flow1"
 
 
 @dataclass(frozen=True)

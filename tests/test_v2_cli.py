@@ -69,3 +69,18 @@ def test_top_uses_alternate_screen_and_restores_terminal(monkeypatch: pytest.Mon
     assert "Flow 2.0 top  2026-08-31 12:00:00" in output
     assert "No running flows." in output
     assert output.endswith(SHOW_CURSOR + LEAVE_ALTERNATE_SCREEN)
+
+
+@pytest.mark.parametrize("key", ["q", "Q", "\x1b"])
+def test_top_quits_on_single_key(key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    class TtyStream(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    stream = TtyStream()
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr("flow.v2.cli.discover_running_flows", lambda: [])
+    monkeypatch.setattr("flow.v2.cli._wait_for_top_key", lambda _fd, _timeout: key)
+
+    assert main(["top"]) == 0
+    assert stream.getvalue().endswith(SHOW_CURSOR + LEAVE_ALTERNATE_SCREEN)

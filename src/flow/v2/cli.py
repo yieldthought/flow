@@ -7,11 +7,19 @@ import asyncio
 import io
 import json
 import os
+import select
 import socket
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+try:
+    import termios
+    import tty
+except ImportError:  # pragma: no cover - Windows
+    termios = None  # type: ignore[assignment]
+    tty = None  # type: ignore[assignment]
 
 from .constants import EX_DATAERR, EX_NEEDS_HELP, EX_RUNTIME, EX_USAGE
 from .processes import discover_running_flows, print_processes
@@ -270,21 +278,59 @@ def _top(argv: list[str]) -> int:
         print_processes(discover_running_flows(), json_output=False, stream=sys.stdout)
         return 0
     stream = sys.stdout
-    stream.write(ENTER_ALTERNATE_SCREEN + HIDE_CURSOR + CLEAR_SCREEN + CURSOR_HOME)
-    stream.flush()
+    input_fd, input_attributes = _enable_top_input()
     try:
+        stream.write(ENTER_ALTERNATE_SCREEN + HIDE_CURSOR + CLEAR_SCREEN + CURSOR_HOME)
+        stream.flush()
         while True:
             frame = io.StringIO()
             print(f"Flow 2.0 top  {time.strftime('%Y-%m-%d %H:%M:%S')}\n", file=frame)
             print_processes(discover_running_flows(), json_output=False, stream=frame)
             stream.write(CURSOR_HOME + frame.getvalue() + CLEAR_TO_END)
             stream.flush()
-            time.sleep(args.interval)
+            if _wait_for_top_key(input_fd, args.interval) in {"q", "Q", "\x1b"}:
+                return 0
     except KeyboardInterrupt:
         return 0
     finally:
+        _restore_top_input(input_fd, input_attributes)
         stream.write(SHOW_CURSOR + LEAVE_ALTERNATE_SCREEN)
         stream.flush()
+
+
+def _enable_top_input() -> tuple[int | None, list[Any] | None]:
+    if termios is None or tty is None or not sys.stdin.isatty():
+        return None, None
+    try:
+        file_descriptor = sys.stdin.fileno()
+        attributes = termios.tcgetattr(file_descriptor)
+        tty.setcbreak(file_descriptor)
+        return file_descriptor, attributes
+    except (AttributeError, OSError, ValueError):
+        return None, None
+
+
+def _restore_top_input(file_descriptor: int | None, attributes: list[Any] | None) -> None:
+    if file_descriptor is None or attributes is None or termios is None:
+        return
+    try:
+        termios.tcsetattr(file_descriptor, termios.TCSADRAIN, attributes)
+    except (OSError, ValueError):
+        pass
+
+
+def _wait_for_top_key(file_descriptor: int | None, timeout: float) -> str:
+    if file_descriptor is None:
+        time.sleep(timeout)
+        return ""
+    try:
+        readable, _, _ = select.select([file_descriptor], [], [], timeout)
+        if not readable:
+            return ""
+        return os.read(file_descriptor, 1).decode("utf-8", errors="ignore")
+    except (OSError, ValueError):
+        time.sleep(timeout)
+        return ""
 
 
 def _load_valid_flow(path: str):

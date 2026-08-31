@@ -22,6 +22,7 @@ from .constants import (
     VALID_MODES,
     VALID_THINKING,
 )
+from .style import StyledArgumentParser
 
 PLACEHOLDER_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
 
@@ -246,8 +247,19 @@ def validate_flow(flow: FlowSpec) -> ValidationResult:
     return ValidationResult(tuple(errors), tuple(warnings))
 
 
-def parse_arguments(flow: FlowSpec, argv: list[str], invocation_cwd: str) -> tuple[dict[str, str], str]:
-    parser = argparse.ArgumentParser(prog=Path(flow.source_path).name, description=flow.description, add_help=True)
+def parse_arguments(
+    flow: FlowSpec,
+    argv: list[str],
+    invocation_cwd: str,
+    *,
+    colour_output: bool = True,
+) -> tuple[dict[str, str], str]:
+    parser = StyledArgumentParser(
+        prog=Path(flow.source_path).name,
+        description=flow.description,
+        add_help=True,
+        colour=colour_output,
+    )
     names = sorted(set(flow.placeholders) | set(flow.args))
     for name in names:
         spec = flow.args.get(name, ArgSpec(name))

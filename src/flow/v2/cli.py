@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import io
 import json
@@ -21,6 +20,8 @@ except ImportError:  # pragma: no cover - Windows
     termios = None  # type: ignore[assignment]
     tty = None  # type: ignore[assignment]
 
+from flow.ansi import PALETTE
+
 from .constants import EX_DATAERR, EX_NEEDS_HELP, EX_RUNTIME, EX_USAGE
 from .processes import discover_running_flows, print_processes
 from .runtime import FlowRuntime
@@ -36,6 +37,7 @@ from .scratchpad import (
     repair_scratchpad,
 )
 from .spec import discover_catalog, load_flow, parse_arguments, render_flow, validate_flow
+from .style import StyledArgumentParser, colour_enabled, paint, phase_colour, status_colour
 
 
 ENTER_ALTERNATE_SCREEN = "\x1b[?1049h"
@@ -51,13 +53,14 @@ class UsageError(ValueError):
     pass
 
 
-class Parser(argparse.ArgumentParser):
+class Parser(StyledArgumentParser):
     def error(self, message: str) -> None:
         raise UsageError(message)
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    json_mode = "--json" in arguments
     if not arguments:
         _print_usage()
         return EX_USAGE
@@ -82,15 +85,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return _new_run(arguments)
     except UsageError as exc:
-        print(f"flow2: {exc}", file=sys.stderr)
+        _print_error(str(exc), plain=json_mode)
         return EX_USAGE
     except (ScratchpadError, ValueError, OSError) as exc:
-        print(f"flow2: {exc}", file=sys.stderr)
+        _print_error(str(exc), plain=json_mode)
         return EX_DATAERR
 
 
 def _new_run(argv: list[str]) -> int:
-    parser = Parser(prog="flow2", add_help=False)
+    parser = Parser(prog="flow2", add_help=False, colour="--json" not in argv)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--scratchpad")
     parser.add_argument("flow_file")
@@ -98,7 +101,7 @@ def _new_run(argv: list[str]) -> int:
     invocation_cwd = str(Path.cwd().resolve())
     flow = _load_valid_flow(known.flow_file)
     try:
-        values, cwd = parse_arguments(flow, flow_argv, invocation_cwd)
+        values, cwd = parse_arguments(flow, flow_argv, invocation_cwd, colour_output=not known.json)
     except SystemExit as exc:
         return 0 if exc.code == 0 else EX_USAGE
     rendered = render_flow(flow, values, cwd)
@@ -123,7 +126,7 @@ def _new_run(argv: list[str]) -> int:
 
 
 def _resume(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 resume")
+    parser = Parser(prog="flow2 resume", colour="--json" not in argv)
     parser.add_argument("scratchpad")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-changed-flow", action="store_true")
@@ -153,7 +156,10 @@ def _internal_run(argv: list[str]) -> int:
     parser.add_argument("--scratchpad", required=True)
     args = parser.parse_args(argv)
     scratchpad = Path(args.scratchpad).expanduser().resolve()
+    json_output = False
     try:
+        metadata, _ = read_scratchpad(scratchpad)
+        json_output = bool(metadata.get("json"))
         with ScratchpadLock(scratchpad):
             metadata, _ = read_scratchpad(scratchpad)
             _validate_resume_environment(metadata, allow_change=False)
@@ -167,18 +173,18 @@ def _internal_run(argv: list[str]) -> int:
             runtime = FlowRuntime(rendered, scratchpad, metadata)
             return asyncio.run(runtime.run())
     except ScratchpadLockedError as exc:
-        print(f"flow2: {exc}", file=sys.stderr)
+        _print_error(str(exc), plain=json_output)
         return EX_NEEDS_HELP
     except ScratchpadError as exc:
-        print(f"flow2: {exc}", file=sys.stderr)
+        _print_error(str(exc), plain=json_output)
         return EX_DATAERR
     except Exception as exc:
-        print(f"flow2: {exc}", file=sys.stderr)
+        _print_error(str(exc), plain=json_output)
         return EX_RUNTIME
 
 
 def _inspect(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 inspect")
+    parser = Parser(prog="flow2 inspect", colour="--json" not in argv)
     parser.add_argument("scratchpad")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -188,13 +194,16 @@ def _inspect(argv: list[str]) -> int:
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print(f"Flow:       {metadata.get('flow', '')}")
-        print(f"State:      {metadata.get('state', '')}")
-        print(f"Phase:      {metadata.get('phase', '')}")
-        print(f"Status:     {metadata.get('status', '')}")
-        print(f"Exit:       {metadata.get('exit_code', '')}")
-        print(f"Thread:     {metadata.get('thread', '')}")
-        print(f"Scratchpad: {path}")
+        exit_code = metadata.get("exit_code")
+        exit_value = str(exit_code)
+        exit_colour = PALETTE.ok if exit_code == 0 else PALETTE.error if isinstance(exit_code, int) else PALETTE.muted
+        _print_field("Flow", metadata.get("flow", ""), PALETTE.bright, bold=True)
+        _print_field("State", metadata.get("state", ""), PALETTE.state, bold=True)
+        _print_field("Phase", metadata.get("phase", ""), phase_colour(str(metadata.get("phase") or "")))
+        _print_field("Status", metadata.get("status", ""), status_colour(str(metadata.get("status") or "")))
+        _print_field("Exit", exit_value, exit_colour, bold=isinstance(exit_code, int))
+        _print_field("Thread", metadata.get("thread", ""), PALETTE.muted)
+        _print_field("Scratchpad", path, PALETTE.subtle)
     return 0
 
 
@@ -208,29 +217,34 @@ def _validate(argv: list[str]) -> int:
             flow = load_flow(path)
             result = validate_flow(flow)
         except Exception as exc:
-            print(f"{path}: error: {exc}", file=sys.stderr)
+            _print_validation(path, "error", str(exc), stream=sys.stderr)
             failed = True
             continue
         for warning in result.warnings:
-            print(f"{path}: warning: {warning}")
+            _print_validation(path, "warning", warning, stream=sys.stdout)
         for error in result.errors:
-            print(f"{path}: error: {error}", file=sys.stderr)
+            _print_validation(path, "error", error, stream=sys.stderr)
         failed = failed or bool(result.errors)
         if not result.errors:
-            print(f"{path}: valid")
+            _print_validation(path, "valid", stream=sys.stdout)
     return EX_DATAERR if failed else 0
 
 
 def _ps(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 ps")
+    parser = Parser(prog="flow2 ps", colour="--json" not in argv)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    print_processes(discover_running_flows(), json_output=bool(args.json), stream=sys.stdout)
+    print_processes(
+        discover_running_flows(),
+        json_output=bool(args.json),
+        stream=sys.stdout,
+        colour=not args.json and colour_enabled(sys.stdout),
+    )
     return 0
 
 
 def _catalog(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 catalog")
+    parser = Parser(prog="flow2 catalog", colour="--json" not in argv)
     parser.add_argument("paths", nargs="*")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -261,10 +275,9 @@ def _catalog(argv: list[str]) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         for flow in payload["flows"]:
-            exits = ", ".join(f"{name}={code}" for name, code in flow["exits"].items())
-            print(f"{flow['name']}: {flow['path']} [{exits}]")
+            _print_catalog_flow(flow)
         for broken in payload["broken"]:
-            print(f"broken: {broken['path']}: {'; '.join(broken['errors'])}", file=sys.stderr)
+            _print_catalog_broken(broken)
     return EX_DATAERR if payload["broken"] else 0
 
 
@@ -278,14 +291,17 @@ def _top(argv: list[str]) -> int:
         print_processes(discover_running_flows(), json_output=False, stream=sys.stdout)
         return 0
     stream = sys.stdout
+    use_colour = colour_enabled(stream)
     input_fd, input_attributes = _enable_top_input()
     try:
         stream.write(ENTER_ALTERNATE_SCREEN + HIDE_CURSOR + CLEAR_SCREEN + CURSOR_HOME)
         stream.flush()
         while True:
             frame = io.StringIO()
-            print(f"Flow 2.0 top  {time.strftime('%Y-%m-%d %H:%M:%S')}\n", file=frame)
-            print_processes(discover_running_flows(), json_output=False, stream=frame)
+            title = paint("Flow 2.0 top", PALETTE.bright, enabled=use_colour, bold=True)
+            timestamp = paint(time.strftime("%Y-%m-%d %H:%M:%S"), PALETTE.subtle, enabled=use_colour)
+            print(f"{title}  {timestamp}\n", file=frame)
+            print_processes(discover_running_flows(), json_output=False, stream=frame, colour=use_colour)
             stream.write(CURSOR_HOME + frame.getvalue() + CLEAR_TO_END)
             stream.flush()
             if _wait_for_top_key(input_fd, args.interval) in {"q", "Q", "\x1b"}:
@@ -364,16 +380,61 @@ def _exec_internal(scratchpad: Path) -> int:
 
 
 def _print_usage() -> None:
-    print(
-        "usage:\n"
-        "  flow2 [--json] [--scratchpad FILE] FILE.flow [flow arguments]\n"
-        "  flow2 resume SCRATCHPAD [--json]\n"
-        "  flow2 inspect SCRATCHPAD [--json]\n"
-        "  flow2 validate FILE.flow [...]\n"
-        "  flow2 catalog [PATH ...] [--json]\n"
-        "  flow2 ps [--json]\n"
-        "  flow2 top [--interval SECONDS]"
+    enabled = colour_enabled(sys.stdout)
+    print(paint("usage:", PALETTE.bright, enabled=enabled, bold=True))
+    suffixes = (
+        " [--json] [--scratchpad FILE] FILE.flow [flow arguments]",
+        " resume SCRATCHPAD [--json]",
+        " inspect SCRATCHPAD [--json]",
+        " validate FILE.flow [...]",
+        " catalog [PATH ...] [--json]",
+        " ps [--json]",
+        " top [--interval SECONDS]",
     )
+    for suffix in suffixes:
+        command = paint("flow2", PALETTE.accent, enabled=enabled, bold=True)
+        print(f"  {command}{paint(suffix, PALETTE.subtle, enabled=enabled)}")
+
+
+def _print_error(message: str, *, plain: bool = False) -> None:
+    enabled = not plain and colour_enabled(sys.stderr)
+    prefix = paint("flow2:", PALETTE.error, enabled=enabled, bold=True)
+    print(f"{prefix} {message}", file=sys.stderr)
+
+
+def _print_field(label: str, value: Any, value_colour: int, *, bold: bool = False) -> None:
+    enabled = colour_enabled(sys.stdout)
+    key = paint(f"{label}:".ljust(12), PALETTE.muted, enabled=enabled)
+    rendered = paint(str(value), value_colour, enabled=enabled, bold=bold)
+    print(f"{key}{rendered}")
+
+
+def _print_validation(path: str, status: str, message: str = "", *, stream: Any) -> None:
+    enabled = colour_enabled(stream)
+    status_code = {"valid": PALETTE.ok, "warning": PALETTE.warn, "error": PALETTE.error}[status]
+    path_text = paint(str(path), PALETTE.subtle, enabled=enabled)
+    status_text = paint(status, status_code, enabled=enabled, bold=status != "warning")
+    suffix = f": {message}" if message else ""
+    print(f"{path_text}: {status_text}{suffix}", file=stream)
+
+
+def _print_catalog_flow(flow: dict[str, Any]) -> None:
+    enabled = colour_enabled(sys.stdout)
+    name = paint(str(flow["name"]), PALETTE.bright, enabled=enabled, bold=True)
+    path = paint(str(flow["path"]), PALETTE.subtle, enabled=enabled)
+    exits = ", ".join(
+        f"{paint(str(state), PALETTE.state, enabled=enabled)}="
+        f"{paint(str(code), PALETTE.ok if code == 0 else PALETTE.error, enabled=enabled, bold=code != 0)}"
+        for state, code in flow["exits"].items()
+    )
+    print(f"{name}: {path} [{exits}]")
+
+
+def _print_catalog_broken(broken: dict[str, Any]) -> None:
+    enabled = colour_enabled(sys.stderr)
+    label = paint("broken:", PALETTE.error, enabled=enabled, bold=True)
+    path = paint(str(broken["path"]), PALETTE.subtle, enabled=enabled)
+    print(f"{label} {path}: {'; '.join(broken['errors'])}", file=sys.stderr)
 
 
 if __name__ == "__main__":

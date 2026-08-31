@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, TextIO
+
+from flow.ansi import PALETTE
+
+from .style import colour_enabled, paint
 
 
 HUMAN_EVENT_KINDS = (
@@ -40,7 +43,8 @@ class Reporter:
         self.started = time.monotonic()
         self.activity_interval = activity_interval
         self._last_activity = 0.0
-        self._colour = bool(getattr(self.stream, "isatty", lambda: False)()) and not os.environ.get("NO_COLOR")
+        self._colour = not json_output and colour_enabled(self.stream)
+        self._error_colour = not json_output and colour_enabled(self.error_stream)
 
     @property
     def elapsed(self) -> float:
@@ -74,7 +78,11 @@ class Reporter:
         self.emit("activity", summary=summary, **fields)
 
     def diagnostic(self, message: str) -> None:
-        print(message, file=self.error_stream, flush=True)
+        print(
+            paint(message, PALETTE.accent, enabled=self._error_colour),
+            file=self.error_stream,
+            flush=True,
+        )
 
     def _stamp(self) -> str:
         seconds = int(self.elapsed)
@@ -84,18 +92,22 @@ class Reporter:
         display_kind = "resume" if kind == "start" and fields.get("resumed") else kind.replace("_", " ")
         label = f"{display_kind:<{HUMAN_LABEL_WIDTH}}"
         colour = {
-            "start": "36",
-            "state": "34",
-            "transition": "35",
-            "activity": "90",
-            "waiting": "33",
-            "needs_help": "33",
-            "final": "32" if fields.get("exit_code") == 0 else "31",
-            "error": "31",
-            "interrupted": "31",
-        }.get(kind, "37")
-        if self._colour:
-            label = f"\x1b[{colour}m{label}\x1b[0m"
+            "start": PALETTE.accent,
+            "state": PALETTE.state,
+            "transition": PALETTE.accent,
+            "activity": PALETTE.muted,
+            "waiting": PALETTE.warn,
+            "needs_help": PALETTE.error,
+            "final": PALETTE.ok if fields.get("exit_code") == 0 else PALETTE.error,
+            "error": PALETTE.error,
+            "interrupted": PALETTE.warn,
+        }.get(kind, PALETTE.muted)
+        label = paint(
+            label,
+            colour,
+            enabled=self._colour,
+            bold=kind in {"needs_help", "final", "error"},
+        )
         detail = self._detail(kind, fields)
         return f"{self._stamp()} {label} {detail}".rstrip()
 

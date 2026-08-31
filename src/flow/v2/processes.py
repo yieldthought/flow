@@ -11,7 +11,10 @@ from typing import Any, TextIO
 
 import psutil
 
+from flow.ansi import PALETTE
+
 from .scratchpad import read_scratchpad, same_process
+from .style import paint, phase_colour
 
 
 @dataclass(frozen=True)
@@ -59,12 +62,19 @@ def discover_running_flows() -> list[RunningFlow]:
     return sorted(found, key=lambda item: (item.flow, item.pid))
 
 
-def print_processes(items: list[RunningFlow], *, json_output: bool, stream: TextIO) -> None:
+def print_processes(
+    items: list[RunningFlow],
+    *,
+    json_output: bool,
+    stream: TextIO,
+    colour: bool = False,
+) -> None:
     if json_output:
         print(json.dumps({"flows": [asdict(item) for item in items]}, sort_keys=True), file=stream)
         return
     if not items:
-        print("No running flows.", file=stream)
+        message = paint("No running flows.", PALETTE.subtle, enabled=colour)
+        print(message, file=stream)
         return
     rows = [
         ("PID", "ELAPSED", "FLOW", "STATE", "PHASE", "THREAD", "SCRATCHPAD"),
@@ -82,10 +92,54 @@ def print_processes(items: list[RunningFlow], *, json_output: bool, stream: Text
         ],
     ]
     widths = [max(len(row[index]) for row in rows) for index in range(len(rows[0]))]
+    if colour:
+        _print_coloured_processes(rows, widths, stream)
+        return
     for row_index, row in enumerate(rows):
         print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip(), file=stream)
         if row_index == 0:
             print("  ".join("-" * width for width in widths), file=stream)
+
+
+def _print_coloured_processes(rows: list[tuple[str, ...]], widths: list[int], stream: TextIO) -> None:
+    header = rows[0]
+    print(
+        "  ".join(
+            paint(_pad_column(value, index, widths), PALETTE.muted, enabled=True, bold=True)
+            for index, value in enumerate(header)
+        ),
+        file=stream,
+    )
+    print(
+        "  ".join(paint("-" * width, PALETTE.dim, enabled=True) for width in widths),
+        file=stream,
+    )
+    for row in rows[1:]:
+        styles = (
+            (PALETTE.accent, True),
+            (PALETTE.ok, False),
+            (PALETTE.bright, True),
+            (PALETTE.state, True),
+            (phase_colour(row[4]), False),
+            (PALETTE.muted, False),
+            (PALETTE.subtle, False),
+        )
+        print(
+            "  ".join(
+                paint(
+                    _pad_column(value, index, widths),
+                    styles[index][0],
+                    enabled=True,
+                    bold=styles[index][1],
+                )
+                for index, value in enumerate(row)
+            ),
+            file=stream,
+        )
+
+
+def _pad_column(value: str, index: int, widths: list[int]) -> str:
+    return value if index == len(widths) - 1 else value.ljust(widths[index])
 
 
 def _scratchpad_from_cmdline(cmdline: list[str]) -> str | None:

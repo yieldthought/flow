@@ -52,7 +52,10 @@ from .ui_server import start_ui_server
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="flow")
+    parser = argparse.ArgumentParser(
+        prog="flow1",
+        description="Legacy Flow 1 compatibility CLI. New workflows use 'flow FILE.flow'.",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -323,11 +326,11 @@ def cmd_self_test(conn: Any, *, timeout: float = 120.0) -> int:
             print(f"self-test agent #{agent_id} was left in place with workdir {work_path}", file=sys.stderr)
             return 1
 
-        print(f"flow self-test: started agent #{agent_id} in state '{start_state}'")
+        print(f"flow1 self-test: started agent #{agent_id} in state '{start_state}'")
         ok, message, _agent, elapsed = _wait_for_self_test_completion(conn, agent_id, timeout=timeout)
         if not ok:
             keep_workdir = True
-            print(f"flow self-test failed after {elapsed:.1f}s: {message}", file=sys.stderr)
+            print(f"flow1 self-test failed after {elapsed:.1f}s: {message}", file=sys.stderr)
             print(f"self-test agent #{agent_id} was left in place with workdir {work_path}", file=sys.stderr)
             return 1
 
@@ -339,7 +342,7 @@ def cmd_self_test(conn: Any, *, timeout: float = 120.0) -> int:
                 f"workdir left at {work_path}",
                 file=sys.stderr,
             )
-        print(f"flow self-test passed in {elapsed:.1f}s")
+        print(f"flow1 self-test passed in {elapsed:.1f}s")
         return 0
     finally:
         if not keep_workdir:
@@ -519,7 +522,7 @@ def cmd_ui(conn: Any, flow_name: str | None) -> int:
         print(f"error: UI workspace not found at {ui_dir}", file=sys.stderr)
         return 1
     if shutil.which("npm") is None:
-        print("error: npm is required for 'flow ui'", file=sys.stderr)
+        print("error: npm is required for 'flow1 ui'", file=sys.stderr)
         return 1
 
     handle = start_ui_server()
@@ -620,11 +623,11 @@ def cmd_shutdown(conn: Any, tokens: list[str]) -> int:
             flow_name = tokens[0]
             if len(tokens) > 1:
                 if tokens[1] != "now":
-                    print("error: shutdown syntax is 'flow shutdown [flow] [now]'", file=sys.stderr)
+                    print("error: shutdown syntax is 'flow1 shutdown [flow] [now]'", file=sys.stderr)
                     return 1
                 mode = "now"
         if len(tokens) > 2:
-            print("error: shutdown syntax is 'flow shutdown [flow] [now]'", file=sys.stderr)
+            print("error: shutdown syntax is 'flow1 shutdown [flow] [now]'", file=sys.stderr)
             return 1
 
     status = daemon_status(conn)

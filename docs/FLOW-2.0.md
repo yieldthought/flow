@@ -1,4 +1,4 @@
-# Flow 2.0
+# Flow 2 runtime contract
 
 ## Contract
 
@@ -7,8 +7,8 @@ workflow, owns one Codex thread, and exits when the workflow reaches a terminal
 state. There is no daemon, tmux session, registry, database, or hidden durable
 Flow state.
 
-During development the isolated command is `flow2`; the installed `flow`
-command remains the V1 runtime until the migration suite passes.
+Flow 2 is the runtime behind the installed `flow` command. The legacy Flow 1
+runtime is available temporarily as `flow1`.
 
 ## Flow files
 
@@ -123,7 +123,7 @@ Executable V2 examples live beside the original V1 YAML examples:
 From the repository root:
 
 ```bash
-flow2 validate examples/*.flow
-flow2 examples/hello-child.flow
-flow2 examples/hello-parent.flow
+flow validate examples/*.flow
+flow examples/hello-child.flow
+flow examples/hello-parent.flow
 ```

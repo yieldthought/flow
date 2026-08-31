@@ -1,4 +1,4 @@
-#!/usr/bin/env flow2
+#!/usr/bin/env flow
 flow:
   name: hello-child
   version: 2

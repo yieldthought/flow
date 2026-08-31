@@ -476,7 +476,7 @@ def test_main_version_prints_and_exits(capsys: object) -> None:
         main(["--version"])
 
     assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == f"flow {__version__}"
+    assert capsys.readouterr().out.strip() == f"flow1 {__version__}"
 
 
 def test_main_self_test_subcommand_runs(tmp_path: Path, monkeypatch: object) -> None:
@@ -580,7 +580,7 @@ def test_cmd_self_test_uses_current_environment_and_cleans_up(
     assert created["fast"] == 0
     assert seen["deleted"] == created["id"]
     assert Path(str(created["cwd"])).name.startswith("flow-self-test-")
-    assert "flow self-test passed" in capsys.readouterr().out
+    assert "flow1 self-test passed" in capsys.readouterr().out
     assert os.environ["CODEX_HOME"] == "/tmp/user-codex-home"
 
 
@@ -607,7 +607,7 @@ def test_cmd_self_test_leaves_failed_agent_for_inspection(
     assert cmd_self_test(conn) == 1
 
     captured = capsys.readouterr()
-    assert "flow self-test failed" in captured.err
+    assert "flow1 self-test failed" in captured.err
     assert "left in place with workdir" in captured.err
 
 

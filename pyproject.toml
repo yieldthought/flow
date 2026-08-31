@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flow-like-a-river"
-version = "0.2.19"
-description = "Flow-driven CLI runtime for Codex agent sessions."
+version = "2.0.0"
+description = "Foreground workflow interpreter for Codex agents."
 readme = "README.md"
 requires-python = ">=3.10"
-keywords = ["agent", "codex", "cli", "workflow", "flowchart", "tmux"]
+keywords = ["agent", "codex", "cli", "workflow", "flowchart"]
 classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
@@ -41,8 +41,8 @@ dev = [
 ]
 
 [project.scripts]
-flow = "flow.cli:main"
-flow2 = "flow.v2.cli:main"
+flow = "flow.v2.cli:main"
+flow1 = "flow.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

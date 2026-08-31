@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _new_run(argv: list[str]) -> int:
-    parser = Parser(prog="flow2", add_help=False, colour="--json" not in argv)
+    parser = Parser(prog="flow", add_help=False, colour="--json" not in argv)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--scratchpad")
     parser.add_argument("flow_file")
@@ -126,7 +126,7 @@ def _new_run(argv: list[str]) -> int:
 
 
 def _resume(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 resume", colour="--json" not in argv)
+    parser = Parser(prog="flow resume", colour="--json" not in argv)
     parser.add_argument("scratchpad")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-changed-flow", action="store_true")
@@ -152,7 +152,7 @@ def _resume(argv: list[str]) -> int:
 
 
 def _internal_run(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 _run")
+    parser = Parser(prog="flow _run")
     parser.add_argument("--scratchpad", required=True)
     args = parser.parse_args(argv)
     scratchpad = Path(args.scratchpad).expanduser().resolve()
@@ -184,7 +184,7 @@ def _internal_run(argv: list[str]) -> int:
 
 
 def _inspect(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 inspect", colour="--json" not in argv)
+    parser = Parser(prog="flow inspect", colour="--json" not in argv)
     parser.add_argument("scratchpad")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -208,7 +208,7 @@ def _inspect(argv: list[str]) -> int:
 
 
 def _validate(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 validate")
+    parser = Parser(prog="flow validate")
     parser.add_argument("files", nargs="+")
     args = parser.parse_args(argv)
     failed = False
@@ -231,7 +231,7 @@ def _validate(argv: list[str]) -> int:
 
 
 def _ps(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 ps", colour="--json" not in argv)
+    parser = Parser(prog="flow ps", colour="--json" not in argv)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     print_processes(
@@ -244,7 +244,7 @@ def _ps(argv: list[str]) -> int:
 
 
 def _catalog(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 catalog", colour="--json" not in argv)
+    parser = Parser(prog="flow catalog", colour="--json" not in argv)
     parser.add_argument("paths", nargs="*")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -282,7 +282,7 @@ def _catalog(argv: list[str]) -> int:
 
 
 def _top(argv: list[str]) -> int:
-    parser = Parser(prog="flow2 top")
+    parser = Parser(prog="flow top")
     parser.add_argument("--interval", type=float, default=1.0)
     args = parser.parse_args(argv)
     if args.interval <= 0:
@@ -392,13 +392,13 @@ def _print_usage() -> None:
         " top [--interval SECONDS]",
     )
     for suffix in suffixes:
-        command = paint("flow2", PALETTE.accent, enabled=enabled, bold=True)
+        command = paint("flow", PALETTE.accent, enabled=enabled, bold=True)
         print(f"  {command}{paint(suffix, PALETTE.subtle, enabled=enabled)}")
 
 
 def _print_error(message: str, *, plain: bool = False) -> None:
     enabled = not plain and colour_enabled(sys.stderr)
-    prefix = paint("flow2:", PALETTE.error, enabled=enabled, bold=True)
+    prefix = paint("flow:", PALETTE.error, enabled=enabled, bold=True)
     print(f"{prefix} {message}", file=sys.stderr)
 
 

@@ -287,7 +287,7 @@ def render_flow(flow: FlowSpec, values: dict[str, str], cwd_override: str | None
 def parse_start_arguments(flow: FlowSpec, state_token: str | None, argv: list[str]) -> tuple[str, dict[str, str], str]:
     selected_state, remainder = _resolve_state_token(flow, state_token, argv)
     parser = argparse.ArgumentParser(
-        prog="flow start",
+        prog="flow1 start",
         description=flow.description,
         add_help=False,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

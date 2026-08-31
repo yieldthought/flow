@@ -287,7 +287,7 @@ class FlowRuntime:
         thread = str(self.metadata.get("thread") or "")
         if thread:
             self.reporter.diagnostic(f"codex resume {shlex.quote(thread)}")
-        self.reporter.diagnostic(f"flow2 resume {shlex.quote(self.scratchpad)}")
+        self.reporter.diagnostic(f"flow resume {shlex.quote(self.scratchpad)}")
         self._emit_final(EX_NEEDS_HELP, resumable=True)
         return EX_NEEDS_HELP
 

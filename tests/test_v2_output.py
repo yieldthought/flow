@@ -63,9 +63,9 @@ def test_reporter_diagnostics_follow_stderr_colour_policy(monkeypatch: pytest.Mo
     monkeypatch.delenv("NO_COLOR", raising=False)
     error_stream = TtyStream()
 
-    Reporter(stream=TtyStream(), error_stream=error_stream).diagnostic("flow2 resume scratchpad.md")
+    Reporter(stream=TtyStream(), error_stream=error_stream).diagnostic("flow resume scratchpad.md")
 
-    assert "\x1b[38;5;151mflow2 resume scratchpad.md" in error_stream.getvalue()
+    assert "\x1b[38;5;151mflow resume scratchpad.md" in error_stream.getvalue()
 
 
 def test_resumed_start_is_explicit_about_checkpoint_and_thread() -> None:

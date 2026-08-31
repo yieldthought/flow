@@ -1,4 +1,4 @@
-#!/usr/bin/env flow2
+#!/usr/bin/env flow
 flow:
   name: flow-2-sdk-self-test
   description: Harmless end-to-end check of the Flow 2.0 Codex SDK runtime.

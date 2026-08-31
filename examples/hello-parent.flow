@@ -1,4 +1,4 @@
-#!/usr/bin/env flow2
+#!/usr/bin/env flow
 flow:
   name: hello-parent
   version: 2
@@ -14,7 +14,7 @@ run-child:
   prompt: |
     Run the child as a synchronous foreground subprocess:
 
-    `flow2 --json {{child_flow}}`
+    `flow --json {{child_flow}}`
 
     Wait for it to exit. Parse the last JSON line and record its `state`,
     `exit_code`, `scratchpad`, `thread`, `outcome`, and `resumable` fields in

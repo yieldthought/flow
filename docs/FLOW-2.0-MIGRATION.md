@@ -1,68 +1,160 @@
-# Flow 2.0 Migration
+# Migrating from Flow 1
 
-## Proven
+Flow 2 replaces the persistent daemon/tmux runtime with a foreground Unix
+process. New workflows should use Flow 2 exclusively.
 
-- The legacy `flow` command and all 202 V1 tests remain unchanged.
-- `flow2` runs `.flow` files in the foreground through `openai-codex` 0.147.
-- A real SDK run created a thread, streamed activity, chose a structured
-  transition, checkpointed one Markdown scratchpad, and returned authored exit
-  0.
-- A real SIGINT during transition evaluation returned 130 without executing a
-  transition. `flow2 resume` then reused the same thread and completed without
-  repeating state work.
-- `flow2 ps --json` found a live shebang-invoked run from its process and
-  scratchpad identity. It disappeared on exit.
-- AutoDebug's foreground runner and Codex thread handoff tests pass unchanged.
-  AutoDebug remains an ordinary subprocess; Flow does not absorb its state or
-  cleanup policy.
+## Command cutover
 
-## Catalog ports
+After installing Flow 2.0:
 
-V1 YAML files remain active and untouched. These V2 files are side by side and
-are ignored by V1's YAML-only catalog:
-
-| Flow | Exit contract |
+| Command | Runtime |
 | --- | --- |
-| `pr-to-ci-result` | success/inherited 0; branch failure 2; harness noise 3 |
-| `local-branch-to-ready-pr` | success 0; too complex 2 |
-| `ci-issue-to-ready-pr` | success 0; too complex 2 |
-| `gh-issue-to-ready-pr` | success 0; too complex 2; blocked 3 |
-| `ci-log-to-issue` | created/updated-existing 0; blocked 2 |
-| `ci-run-to-notification` | done 0 |
-| `ci-runs-to-pr-comment` | success-no-post/posted 0; failure 2; blocked 3 |
-| `deepseek-ci-to-triage-report` | report-to-slack 0 |
-| `pr-to-model-bounty-review` | pending-review-created 0; blocked 2 |
-| `repo-issues-to-autodebug-case` | success/no-new-issues 0; new-hard-case 1; blocked 2 |
-| `repo-issues-to-autotriage-case` | success/no-new-issues 0; new-hard-case 1; blocked 2 |
-| `mark-away-continuity` | cycle-complete/final-handoff 0; blocked 2 |
+| `flow FILE.flow ...` | Current Flow 2 runtime |
+| `flow1 ...` | Temporary Flow 1 compatibility runtime |
 
-Every V1 YAML file remains active and untouched; each V2 sibling is at
-`~/flows/<name>.flow`. All 12 validate and are executable. The three CI-parent
-flows run `pr-to-ci-result` synchronously with `flow2 --json`, record the final
-state, exit, scratchpad, and thread, and treat 70/75/130/143 as resumable
-intervention. `mark-away-continuity` now performs one scheduled cycle per
-process and runs selected children synchronously and sequentially.
+The development-only `flow2` command no longer exists in published package
+metadata. Replace it with `flow` in scripts and shebangs.
 
-## Remote contract
-
-No remote runner is required. Install the same Flow build and Codex auth on the
-remote host, then run an ordinary foreground command over SSH:
+Flow 1 commands still work when prefixed with `flow1`:
 
 ```bash
-ssh HOST 'cd WORKDIR && flow --json FILE.flow ARGS...'
+flow1 start old-flow.yaml --arg value
+flow1 list
+flow1 show 17
+flow1 view 17
+flow1 shutdown
 ```
 
-The JSON final event is the caller contract. `flow ps` and `flow top` are
-host-local. Resume must run on the host and under the `CODEX_HOME` named in the
-scratchpad. Remote resource acquisition and release stay in authored states;
-signals and needs-help do not run cleanup prompts.
+Flow 1 requires its existing daemon, tmux, SQLite state, and `~/.flow`
+directories. It is retained only to finish or inspect old runs while workflows
+are ported. Do not start new integrations against it.
 
-## Cutover gates
+## File format changes
 
-1. Exercise one resource-owning IRD flow and one AutoDebug flow without
-   performing destructive cleanup on interruption.
-2. Exercise synchronous child signal propagation on a real parent/child pair.
-3. Install `flow2` on a remote host and verify SSH JSON output plus same-host
-   resume.
-4. Route `flow` to V2, change development shebangs from `flow2` to `flow`, and
-   retain V1 under an explicit compatibility command for one release.
+Flow 2 files use the `.flow` extension and `version: 2`. A `.flow` file may be
+executable:
+
+```yaml
+#!/usr/bin/env flow
+flow:
+  name: example
+  version: 2
+```
+
+The important schema changes are:
+
+- replace `.yaml` or `.yml` with `.flow`
+- replace terminal `end: true` with an explicit `exit: N`
+- assign `0` to successful terminal outcomes and distinct non-zero codes to
+  outcomes callers need to route
+- run the file directly with `flow FILE.flow`; there is no `start` subcommand
+- treat each invocation as one foreground process rather than a registered
+  background agent
+
+Most `flow:`, state prompt, transition, wait, argument, model, mode, thinking,
+and fast fields port directly.
+
+Before:
+
+```yaml
+flow:
+  name: check-ci
+
+check:
+  start: true
+  prompt: Check CI.
+  transitions:
+    - if: CI passed.
+      go: success
+    - if: CI failed.
+      go: failure
+
+success:
+  end: true
+
+failure:
+  end: true
+```
+
+After:
+
+```yaml
+#!/usr/bin/env flow
+flow:
+  name: check-ci
+  version: 2
+
+check:
+  start: true
+  prompt: Check CI.
+  transitions:
+    - if: CI passed.
+      go: success
+    - if: CI failed.
+      go: failure
+
+success:
+  exit: 0
+
+failure:
+  exit: 2
+```
+
+## Operational changes
+
+Flow 1 identified runs by numeric agent ID and kept durable state in a daemon
+database. Flow 2 identifies a run by its visible Markdown scratchpad:
+
+```bash
+flow check-ci.flow
+flow inspect flow-check-ci-1.md
+flow resume flow-check-ci-1.md
+```
+
+`flow ps` and `flow top` discover only live local processes. Completed runs are
+not retained in a hidden registry; their scratchpads are the durable record.
+
+A needs-help result exits 75 and prints the exact `codex resume` and
+`flow resume` commands. Resolve the issue in the Codex thread, then resume Flow
+from the same scratchpad.
+
+Ctrl-C and SIGTERM checkpoint and exit. They do not run cleanup prompts.
+Resource release must be part of normal flow transitions and terminal states.
+
+## Composition changes
+
+Flow 1 parents could launch registered children and return `wait-for-child`.
+Flow 2 composition is ordinary synchronous process composition:
+
+```bash
+flow --json child.flow --arg value
+```
+
+Read the child's final JSON event and exit code. Preserve its scratchpad and
+thread when the result is resumable. There is no hidden child registry or
+resource ownership transfer.
+
+## Porting checklist
+
+1. Copy the workflow to a `.flow` file and set `version: 2`.
+2. Replace every `end: true` with an intentional `exit: N`.
+3. Change `flow start FILE.yaml` to `flow FILE.flow`.
+4. Change `flow2` development references and shebangs to `flow`.
+5. Replace numeric-agent inspection with scratchpad-based `inspect` and
+   `resume`.
+6. Replace `wait-for-child` composition with a synchronous `flow --json`
+   subprocess.
+7. Confirm Ctrl-C preserves resources safely; do not add interrupt cleanup
+   prompts.
+8. Run `flow validate FILE.flow`.
+9. Exercise success, authored failure, needs-help, resume, and signal paths.
+
+## Compatibility window
+
+`flow1` preserves the pre-2.0 runtime for a short migration window. It is not a
+second supported design direction and may be removed after old runs and files
+have been retired.
+
+The complete historical documentation is available in the
+[Flow 1 archived guide](FLOW-1.md). The current behavior is defined by the
+[main README](../README.md) and [Flow 2 runtime contract](FLOW-2.0.md).

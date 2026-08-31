@@ -36,7 +36,7 @@ def test_cli_uses_sysexits_for_usage() -> None:
 def test_process_marker_requires_internal_run_and_scratchpad() -> None:
     command = ["python", "-m", "flow.v2.cli", "_run", "--scratchpad", "/tmp/flow-demo-1.md"]
     assert _scratchpad_from_cmdline(command) == "/tmp/flow-demo-1.md"
-    assert _scratchpad_from_cmdline(["flow2", "demo.flow"]) is None
+    assert _scratchpad_from_cmdline(["flow", "demo.flow"]) is None
 
 
 def test_ps_json_has_stable_structured_shape(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -134,7 +134,7 @@ def test_cli_colours_human_terminal_surfaces(tmp_path: Path, monkeypatch: pytest
     assert "\x1b[1;38;5;189mdone" in human_output
     assert "\x1b[1;38;5;114mvalid" in human_output
     assert "\x1b[1;38;5;210m4" in human_output
-    assert "\x1b[1;38;5;210mflow2:" in errors.getvalue()
+    assert "\x1b[1;38;5;210mflow:" in errors.getvalue()
 
 
 def test_cli_keeps_redirected_and_json_output_plain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -91,6 +91,12 @@ state, and Codex thread. It refuses a live lock, a changed flow digest, or a
 different host/`CODEX_HOME` by default. `flow inspect SCRATCHPAD --json` reads a
 completed or stopped run without maintaining a completed-run registry.
 
+`flow resume SCRATCHPAD --state STATE` deliberately redirects a stopped or
+completed checkpoint to a named state while preserving the scratchpad body,
+arguments, and Codex thread. It clears previous terminal, wait, turn, and
+process fields, then re-enters that state from its full work prompt. The state
+must exist in the current validated definition, and live ownership is refused.
+
 `flow chat SCRATCHPAD` acquires the same ephemeral lock and runs `codex resume`
 interactively for the recorded thread. It does not run a Flow turn, change
 state, or evaluate transitions. Both completed and resumable stopped runs may

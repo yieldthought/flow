@@ -33,6 +33,7 @@ from flow.v2.scratchpad import (
     new_metadata,
     read_scratchpad,
 )
+from flow.v2.spec import load_flow
 
 
 ANSI_COLOUR = re.compile(r"\x1b\[[0-9;]*m")
@@ -46,6 +47,130 @@ class TtyStream(io.StringIO):
 def test_cli_uses_sysexits_for_usage() -> None:
     assert main([]) == 64
     assert main(["top", "--interval", "0"]) == 64
+
+
+def test_resume_state_restarts_completed_checkpoint_with_same_thread_and_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow_path = tmp_path / "demo.flow"
+    scratchpad = tmp_path / "flow-demo-1.md"
+    flow_path.write_text(
+        "flow:\n  name: demo\n  version: 2\nwork:\n  start: true\n  prompt: Work.\n"
+        "  transitions:\n    - go: done\ndone:\n  exit: 2\n",
+        encoding="utf-8",
+    )
+    flow = load_flow(flow_path)
+    metadata = new_metadata(
+        flow_path=str(flow_path),
+        flow_digest=flow.digest,
+        flow_name=flow.name,
+        argv=[str(flow_path)],
+        arguments={},
+        invocation_cwd=str(tmp_path),
+        cwd=str(tmp_path),
+        state="done",
+        json_output=False,
+    )
+    metadata.update(
+        status="completed",
+        phase="completed",
+        thread="thread-1",
+        exit_code=2,
+        resumable=False,
+        ended_at="earlier",
+        last_error="blocked",
+    )
+    create_scratchpad(scratchpad, metadata)
+    scratchpad.write_text(scratchpad.read_text() + "Durable evidence.\n", encoding="utf-8")
+    executed: list[Path] = []
+    monkeypatch.setattr("flow.v2.cli._exec_internal", lambda path: executed.append(path) or 0)
+
+    assert main(["resume", str(scratchpad), "--state", "work"]) == 0
+
+    restarted, body = read_scratchpad(scratchpad)
+    assert executed == [scratchpad]
+    assert restarted["state"] == "work"
+    assert restarted["phase"] == "enter_state"
+    assert restarted["status"] == "ready"
+    assert restarted["thread"] == "thread-1"
+    assert restarted["exit_code"] is None
+    assert restarted["resumable"] is True
+    assert restarted["ended_at"] == ""
+    assert restarted["last_error"] == ""
+    assert restarted["last_outcome"] == "manually restarted from done at work"
+    assert body.endswith("Durable evidence.\n")
+    assert not journal_path(scratchpad).exists()
+
+
+def test_resume_state_refuses_unknown_state_without_changing_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow_path = tmp_path / "demo.flow"
+    scratchpad = tmp_path / "flow-demo-1.md"
+    flow_path.write_text(
+        "flow:\n  name: demo\n  version: 2\ndone:\n  start: true\n  exit: 0\n",
+        encoding="utf-8",
+    )
+    flow = load_flow(flow_path)
+    metadata = new_metadata(
+        flow_path=str(flow_path),
+        flow_digest=flow.digest,
+        flow_name=flow.name,
+        argv=[str(flow_path)],
+        arguments={},
+        invocation_cwd=str(tmp_path),
+        cwd=str(tmp_path),
+        state="done",
+        json_output=False,
+    )
+    metadata.update(status="completed", phase="completed", exit_code=0, resumable=False)
+    create_scratchpad(scratchpad, metadata)
+    original = scratchpad.read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        "flow.v2.cli._exec_internal",
+        lambda _path: pytest.fail("invalid state was executed"),
+    )
+
+    assert main(["resume", str(scratchpad), "--state", "missing"]) == 65
+    assert scratchpad.read_text(encoding="utf-8") == original
+
+
+def test_resume_state_refuses_live_owner_without_changing_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow_path = tmp_path / "demo.flow"
+    scratchpad = tmp_path / "flow-demo-1.md"
+    flow_path.write_text(
+        "flow:\n  name: demo\n  version: 2\nwork:\n  start: true\n  prompt: Work.\n"
+        "  transitions:\n    - go: done\ndone:\n  exit: 0\n",
+        encoding="utf-8",
+    )
+    flow = load_flow(flow_path)
+    metadata = new_metadata(
+        flow_path=str(flow_path),
+        flow_digest=flow.digest,
+        flow_name=flow.name,
+        argv=[str(flow_path)],
+        arguments={},
+        invocation_cwd=str(tmp_path),
+        cwd=str(tmp_path),
+        state="work",
+        json_output=False,
+    )
+    metadata.update(status="running", phase="work_turn", thread="thread-1")
+    create_scratchpad(scratchpad, metadata)
+    original = scratchpad.read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        "flow.v2.cli._exec_internal",
+        lambda _path: pytest.fail("live state was executed"),
+    )
+
+    with ScratchpadLock(scratchpad):
+        assert main(["resume", str(scratchpad), "--state", "work"]) == 75
+        assert scratchpad.read_text(encoding="utf-8") == original
 
 
 def test_chart_named_output_is_written_without_opening_a_viewer(

@@ -144,26 +144,61 @@ def _new_run(argv: list[str]) -> int:
 def _resume(argv: list[str]) -> int:
     parser = Parser(prog="flow resume", colour="--json" not in argv)
     parser.add_argument("scratchpad")
+    parser.add_argument(
+        "--state",
+        help="restart from STATE, preserving the scratchpad and Codex thread",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-changed-flow", action="store_true")
     parser.add_argument("--allow-environment-change", action="store_true")
     args = parser.parse_args(argv)
     scratchpad = Path(args.scratchpad).expanduser().resolve()
-    metadata, _ = read_scratchpad(scratchpad)
-    if metadata.get("status") == "completed" or metadata.get("phase") == "completed":
-        raise ScratchpadError(f"flow is already complete: {scratchpad}")
-    _validate_resume_environment(metadata, allow_change=bool(args.allow_environment_change))
-    if args.allow_environment_change:
-        metadata["host"] = socket.gethostname()
-        metadata["codex_home"] = codex_home()
-    flow = _load_valid_flow(str(metadata["flow_path"]))
-    if flow.digest != metadata.get("flow_digest") and not args.allow_changed_flow:
-        raise ScratchpadError("flow file changed since this run; pass --allow-changed-flow to resume deliberately")
-    if args.allow_changed_flow:
-        metadata["flow_digest"] = flow.digest
-    if args.json:
-        metadata["json"] = True
-    repair_scratchpad(scratchpad, metadata)
+    try:
+        with ScratchpadLock(scratchpad):
+            metadata, _ = read_scratchpad(scratchpad)
+            completed = metadata.get("status") == "completed" or metadata.get("phase") == "completed"
+            if completed and not args.state:
+                raise ScratchpadError(
+                    f"flow is already complete: {scratchpad}; pass --state STATE to restart it"
+                )
+            _validate_resume_environment(metadata, allow_change=bool(args.allow_environment_change))
+            if args.allow_environment_change:
+                metadata["host"] = socket.gethostname()
+                metadata["codex_home"] = codex_home()
+            flow = _load_valid_flow(str(metadata["flow_path"]))
+            if flow.digest != metadata.get("flow_digest") and not args.allow_changed_flow:
+                raise ScratchpadError(
+                    "flow file changed since this run; pass --allow-changed-flow to resume deliberately"
+                )
+            if args.allow_changed_flow:
+                metadata["flow_digest"] = flow.digest
+            if args.state:
+                if args.state not in flow.states:
+                    choices = ", ".join(flow.states)
+                    raise ScratchpadError(f"flow has no state '{args.state}'; choose one of: {choices}")
+                previous_state = str(metadata.get("state") or "")
+                metadata.update(
+                    state=args.state,
+                    phase="enter_state",
+                    status="ready",
+                    ready_at="",
+                    pid=None,
+                    process_started_at=None,
+                    turn_id="",
+                    turn_kind="",
+                    request_id="",
+                    ended_at="",
+                    last_outcome=f"manually restarted from {previous_state} at {args.state}",
+                    last_error="",
+                    exit_code=None,
+                    resumable=True,
+                )
+            if args.json:
+                metadata["json"] = True
+            repair_scratchpad(scratchpad, metadata)
+    except ScratchpadLockedError as exc:
+        _print_error(str(exc), plain=bool(args.json))
+        return EX_NEEDS_HELP
     return _exec_internal(scratchpad)
 
 
@@ -853,7 +888,7 @@ def _print_usage() -> None:
     print(paint("usage:", PALETTE.bright, enabled=enabled, bold=True))
     suffixes = (
         " [--json] [--scratchpad FILE] FILE.flow [flow arguments]",
-        " resume SCRATCHPAD [--json]",
+        " resume SCRATCHPAD [--state STATE] [--json]",
         " chat SCRATCHPAD",
         " chart FILE.flow [-o OUTPUT.html] [--theme dark|light]",
         " inspect SCRATCHPAD [--json]",

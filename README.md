@@ -130,7 +130,7 @@ flow validate flows/*.flow
 
 ```bash
 flow [--json] [--scratchpad FILE] FILE.flow [flow arguments]
-flow resume SCRATCHPAD [--json]
+flow resume SCRATCHPAD [--state STATE] [--json]
 flow chat SCRATCHPAD
 flow chart FILE.flow [-o OUTPUT.html] [--theme dark|light]
 flow inspect SCRATCHPAD [--json]
@@ -153,6 +153,17 @@ default. Deliberate recovery options are available in command help:
 ```bash
 flow resume --help
 ```
+
+To deliberately restart a stopped or completed run from a particular state,
+preserving its scratchpad body, arguments, and Codex thread, use:
+
+```bash
+flow resume SCRATCHPAD --state STATE
+```
+
+This clears the previous terminal, wait, turn, and process fields and re-enters
+`STATE` from its full work prompt. Flow validates the state name and refuses a
+scratchpad currently owned by another Flow or chat process.
 
 `flow chat SCRATCHPAD` opens the scratchpad's Codex thread for interactive
 questions without advancing the Flow or evaluating a transition. It works for

@@ -45,6 +45,7 @@ complete:
     assert rendered.name == "review-metal"
     assert rendered.states["complete"].exit_code == 7
     assert rendered.path == str((tmp_path / "work" / "metal").resolve())
+    assert rendered.argument_values == {"repo": "metal"}
 
 
 def test_v2_rejects_v1_end_and_reserved_exit_codes(tmp_path: Path) -> None:

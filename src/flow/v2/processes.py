@@ -68,6 +68,7 @@ def print_processes(
     json_output: bool,
     stream: TextIO,
     colour: bool = False,
+    selected_scratchpad: str | None = None,
 ) -> None:
     if json_output:
         print(json.dumps({"flows": [asdict(item) for item in items]}, sort_keys=True), file=stream)
@@ -92,29 +93,43 @@ def print_processes(
         ],
     ]
     widths = [max(len(row[index]) for row in rows) for index in range(len(rows[0]))]
+    selected_row = next(
+        (index for index, item in enumerate(items, start=1) if item.scratchpad == selected_scratchpad),
+        None,
+    )
     if colour:
-        _print_coloured_processes(rows, widths, stream)
+        _print_coloured_processes(rows, widths, stream, selected_row=selected_row)
         return
     for row_index, row in enumerate(rows):
-        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip(), file=stream)
+        prefix = "> " if row_index == selected_row else "  " if selected_row is not None else ""
+        print(prefix + "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip(), file=stream)
         if row_index == 0:
-            print("  ".join("-" * width for width in widths), file=stream)
+            separator_prefix = "  " if selected_row is not None else ""
+            print(separator_prefix + "  ".join("-" * width for width in widths), file=stream)
 
 
-def _print_coloured_processes(rows: list[tuple[str, ...]], widths: list[int], stream: TextIO) -> None:
+def _print_coloured_processes(
+    rows: list[tuple[str, ...]],
+    widths: list[int],
+    stream: TextIO,
+    *,
+    selected_row: int | None = None,
+) -> None:
     header = rows[0]
+    prefix = "  " if selected_row is not None else ""
     print(
-        "  ".join(
+        prefix
+        + "  ".join(
             paint(_pad_column(value, index, widths), PALETTE.muted, enabled=True, bold=True)
             for index, value in enumerate(header)
         ),
         file=stream,
     )
     print(
-        "  ".join(paint("-" * width, PALETTE.dim, enabled=True) for width in widths),
+        prefix + "  ".join(paint("-" * width, PALETTE.dim, enabled=True) for width in widths),
         file=stream,
     )
-    for row in rows[1:]:
+    for row_index, row in enumerate(rows[1:], start=1):
         styles = (
             (PALETTE.accent, True),
             (PALETTE.ok, False),
@@ -125,7 +140,8 @@ def _print_coloured_processes(rows: list[tuple[str, ...]], widths: list[int], st
             (PALETTE.subtle, False),
         )
         print(
-            "  ".join(
+            (paint("> ", PALETTE.accent, enabled=True, bold=True) if row_index == selected_row else prefix)
+            + "  ".join(
                 paint(
                     _pad_column(value, index, widths),
                     styles[index][0],

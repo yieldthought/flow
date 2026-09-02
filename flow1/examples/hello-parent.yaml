@@ -15,7 +15,6 @@ launch:
     - go: done
 
 done:
-  thinking: low
   prompt: |
     The child flow has finished. Note the end state and child scratchpad path
     you were told about, then finish by choosing `finish`.

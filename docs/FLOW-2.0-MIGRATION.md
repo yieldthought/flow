@@ -51,8 +51,11 @@ The important schema changes are:
 - treat each invocation as one foreground process rather than a registered
   background agent
 
-Most `flow:`, state prompt, transition, wait, argument, model, mode, thinking,
-and fast fields port directly.
+Most `flow:`, state prompt, transition, wait, argument, model, mode, and fast
+fields port directly. Move any state-level `thinking` values to one
+top-level `flow.thinking` choice and remove the overrides. Switching reasoning
+effort between turns invalidates the OpenAI model's reusable prefill cache and
+usually increases total cost.
 
 Before:
 
@@ -114,9 +117,9 @@ flow resume flow-check-ci-1.md
 `flow ps` and `flow top` discover only live local processes. Completed runs are
 not retained in a hidden registry; their scratchpads are the durable record.
 
-A needs-help result exits 75 and prints the exact `codex resume` and
-`flow resume` commands. Resolve the issue in the Codex thread, then resume Flow
-from the same scratchpad.
+A needs-help result exits 75 and prints the exact `flow chat` and `flow resume`
+commands. Resolve the issue in the Codex thread, then resume Flow from the same
+scratchpad.
 
 Ctrl-C and SIGTERM checkpoint and exit. They do not run cleanup prompts.
 Resource release must be part of normal flow transitions and terminal states.

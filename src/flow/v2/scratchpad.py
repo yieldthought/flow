@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import socket
@@ -184,9 +185,13 @@ def same_process(metadata: dict[str, Any], process: psutil.Process) -> bool:
         return False
 
 
+def journal_path(scratchpad: str | Path) -> Path:
+    return Path(f"{Path(scratchpad).expanduser().resolve()}.lock")
+
+
 class ScratchpadLock(AbstractContextManager["ScratchpadLock"]):
     def __init__(self, scratchpad: str | Path) -> None:
-        self.path = Path(f"{Path(scratchpad).expanduser().resolve()}.lock")
+        self.path = journal_path(scratchpad)
         self.handle: Any = None
 
     def __enter__(self) -> "ScratchpadLock":
@@ -209,16 +214,31 @@ class ScratchpadLock(AbstractContextManager["ScratchpadLock"]):
         self.handle.flush()
         return self
 
+    def append_event(self, event: dict[str, Any]) -> None:
+        if self.handle is None:
+            raise OSError("flow event journal is not open")
+        self.handle.seek(0, os.SEEK_END)
+        self.handle.write(json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n")
+        self.handle.flush()
+
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         if self.handle is None:
             return
         if fcntl is not None:
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            finally:
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+                self.handle.close()
+                self.handle = None
+            return
         self.handle.close()
         self.handle = None
-        try:
+        try:  # pragma: no cover - Windows
             self.path.unlink()
-        except FileNotFoundError:
+        except FileNotFoundError:  # pragma: no cover - Windows
             pass
 
 

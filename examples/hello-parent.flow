@@ -6,7 +6,7 @@ flow:
   thinking: low
   args:
     child_flow:
-      help: path to the hello-child Flow 2.0 file
+      help: path to the hello-child Flow file
       default: examples/hello-child.flow
 
 run-child:

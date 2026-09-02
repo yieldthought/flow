@@ -10,7 +10,6 @@ from typing import Any
 
 from openai_codex import ApprovalMode, AsyncCodex, AsyncTurnHandle, CodexConfig, Sandbox
 from openai_codex.generated.v2_all import (
-    AgentMessageDeltaNotification,
     AgentMessageThreadItem,
     ItemCompletedNotification,
     MessagePhase,
@@ -18,6 +17,7 @@ from openai_codex.generated.v2_all import (
     TurnCompletedNotification,
 )
 
+from .activity import ActivitySummarizer, CodexActivityAssessor
 from .spec import FlowSpec, StateSpec
 
 ActivityCallback = Callable[[str], None]
@@ -68,13 +68,14 @@ class CodexBackend(AgentBackend):
         self.thread: Any = None
         self.flow: FlowSpec | None = None
         self.active: AsyncTurnHandle | None = None
+        self.activity: ActivitySummarizer | None = None
 
     async def open(self, flow: FlowSpec, thread_id: str = "", scratchpad: str = "") -> str:
         self.flow = flow
         config = CodexConfig(
             cwd=flow.path,
             client_name="flow",
-            client_title="Flow 2.0",
+            client_title="Flow",
             config_overrides=("check_for_update_on_startup=false",),
         )
         self.codex = AsyncCodex(config=config)
@@ -103,7 +104,7 @@ class CodexBackend(AgentBackend):
                 config=thread_config,
                 cwd=flow.path,
                 developer_instructions=(
-                    "You are executing one state at a time under Flow 2.0. Follow the current state prompt, "
+                    "You are executing one state at a time under Flow. Follow the current state prompt, "
                     "keep durable notes in the scratchpad named by the prompt, and do not invent or execute "
                     "workflow transitions yourself. Flow will ask for a structured transition decision."
                 ),
@@ -117,6 +118,12 @@ class CodexBackend(AgentBackend):
                 await self.thread.set_name(flow.name)
             except Exception:
                 pass
+        self.activity = ActivitySummarizer(
+            flow.name,
+            CodexActivityAssessor(self.codex, cwd=flow.path),
+            flow_goal=flow.description or "",
+            arguments=tuple(sorted(flow.argument_values.items())),
+        )
         return str(self.thread.id)
 
     async def run_turn(
@@ -147,9 +154,25 @@ class CodexBackend(AgentBackend):
         turn_id = self.active.id
         if on_started is not None:
             on_started(turn_id)
+        activity = self.activity
+
+        def submit_activity(text: str) -> None:
+            if activity is not None and on_activity is not None:
+                activity.submit(
+                    state=state.name,
+                    text=text,
+                    emit=on_activity,
+                    state_goals=_state_goals(state),
+                )
+
         try:
-            return await self._consume(self.active, on_activity=on_activity)
+            return await self._consume(
+                self.active,
+                on_activity=submit_activity if on_activity is not None else None,
+            )
         finally:
+            if activity is not None:
+                activity.end_turn()
             if self.active is not None and self.active.id == turn_id:
                 self.active = None
 
@@ -183,8 +206,11 @@ class CodexBackend(AgentBackend):
 
     async def close(self) -> None:
         codex, self.codex = self.codex, None
+        activity, self.activity = self.activity, None
         self.active = None
         self.thread = None
+        if activity is not None:
+            await activity.close()
         if codex is not None:
             await codex.close()
 
@@ -193,24 +219,19 @@ class CodexBackend(AgentBackend):
         final = ""
         status = "failed"
         error = ""
-        activity = ""
         async for event in handle.stream():
             payload = event.payload
-            if isinstance(payload, AgentMessageDeltaNotification):
-                activity = (activity + payload.delta)[-2000:]
-                if on_activity is not None and ("\n" in payload.delta or len(activity) >= 160):
-                    on_activity(activity)
-            elif isinstance(payload, ItemCompletedNotification):
+            if isinstance(payload, ItemCompletedNotification):
                 item = payload.item.root if hasattr(payload.item, "root") else payload.item
                 if isinstance(item, AgentMessageThreadItem):
+                    if on_activity is not None and item.phase != MessagePhase.final_answer:
+                        on_activity(item.text)
                     if item.phase == MessagePhase.final_answer or not final:
                         final = item.text
             elif isinstance(payload, TurnCompletedNotification):
                 status = _enum_value(payload.turn.status)
                 if payload.turn.error is not None:
                     error = payload.turn.error.message or ""
-        if on_activity is not None and activity:
-            on_activity(activity)
         return BackendTurn(handle.id, status, final, error)
 
 
@@ -220,6 +241,15 @@ def _mode_settings(mode: str) -> tuple[ApprovalMode, Sandbox]:
     if mode == "full-auto":
         return ApprovalMode.deny_all, Sandbox.workspace_write
     return ApprovalMode.auto_review, Sandbox.workspace_write
+
+
+def _state_goals(state: StateSpec) -> tuple[str, ...]:
+    if state.terminal:
+        return (f"Complete terminal state '{state.name}' and exit {state.exit_code}.",)
+    return tuple(
+        f"Reach '{transition.target}' when {transition.condition or 'this state is complete'}."
+        for transition in state.transitions
+    )
 
 
 def _enum_value(value: Any) -> str:

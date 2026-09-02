@@ -69,7 +69,8 @@ python -m pip install flow-like-a-river
 ```
 
 The package name differs because `flow` was already taken on PyPI. The command
-is `flow`.
+is `flow`. The optional `flow chart` command also requires the Graphviz `dot`
+executable on `PATH`.
 
 For development:
 
@@ -103,13 +104,20 @@ A state supports:
 - `start: true`: marks the one start state
 - `prompt`: work to send to Codex
 - `wait`: delay before the state runs, such as `30s`, `10m`, or `2h`
-- `mode`, `thinking`, and `fast`: optional per-state overrides
+- `mode` and `fast`: optional per-state overrides
+- `thinking`: accepted as a compatibility override, but discouraged; new and
+  maintained flows should set one reasoning effort in the top-level `flow:`
+  block and leave it unchanged across states
 - `transitions`: ordered `if` / `wait` / `go` routes to other states
 - `exit: N`: makes the state terminal and defines its process exit code
 
 Every non-terminal state needs a prompt and at least one transition. A terminal
 state uses `exit: N`, cannot have transitions, and may omit its prompt to exit
 immediately. Flow-authored exit codes are 0 through 63.
+
+Changing reasoning effort between turns invalidates the OpenAI model's reusable
+prefill cache and usually increases total cost, even when a terminal or polling
+state appears simple. Choose the budget for the workflow as a whole.
 
 Validate before running:
 
@@ -123,7 +131,10 @@ flow validate flows/*.flow
 ```bash
 flow [--json] [--scratchpad FILE] FILE.flow [flow arguments]
 flow resume SCRATCHPAD [--json]
+flow chat SCRATCHPAD
+flow chart FILE.flow [-o OUTPUT.html] [--theme dark|light]
 flow inspect SCRATCHPAD [--json]
+flow watch SCRATCHPAD [--json]
 ```
 
 By default the scratchpad is named
@@ -143,33 +154,97 @@ default. Deliberate recovery options are available in command help:
 flow resume --help
 ```
 
-When a flow exits because it needs help, it prints both commands needed to
-continue:
+`flow chat SCRATCHPAD` opens the scratchpad's Codex thread for interactive
+questions without advancing the Flow or evaluating a transition. It works for
+completed, needs-help, interrupted, and otherwise stopped runs, but refuses a
+scratchpad currently owned by a live Flow process. The command holds that same
+ownership lock while `codex resume` is open, preventing `flow resume` from
+driving the thread concurrently. When a removed temporary worktree was the
+original working directory, chat falls back to the invocation directory and
+prints the substitution. Exit chat before running `flow resume`.
+
+When a flow exits because it needs help, it prints the commands for talking to
+the stopped agent and then continuing the workflow:
 
 ```bash
-codex resume THREAD
+flow chat SCRATCHPAD
 flow resume SCRATCHPAD
 ```
 
-A human or agent can resume the Codex thread, resolve the problem, and then
-resume Flow from the same checkpoint.
+A human can ask questions or resolve the problem in the Codex thread, exit the
+chat, and then resume Flow from the same checkpoint.
+
+## Flow charts
+
+```bash
+flow chart review-pr.flow
+flow chart review-pr.flow --output review-pr-chart.html
+flow chart review-pr.flow --theme light --output review-pr-light.html
+```
+
+The first form renders a standalone HTML chart in the system temporary
+directory and opens it in the platform's default browser. `--output` (or `-o`)
+writes to the named location and does not open a viewer. The page embeds its
+SVG and has no network dependency. Start, wait, successful exit, and nonzero
+exit states use distinct functional colours; transition waits use dashed
+edges. The graph is laid out primarily from top to bottom and uses the browser's
+ordinary page scrolling. Graph zoom starts at a compact `100%`; the controls
+zoom the graph independently, and `Fit width` fits it to the browser viewport.
+Select a state to inspect its complete prompt, settings, and transition
+conditions without crowding the graph. Each state has a deterministic pastel
+colour and every incoming edge uses its destination state's colour. Selecting
+a state preserves those colours for its inbound and outbound relationships and
+greys out everything unrelated. Inbound edges therefore match the selected
+state, while outbound edges match their respective destination states. Click
+the graph background to return to the fully coloured overview.
+Hovering a transition label shows its complete, untruncated condition.
+The full-width inspector below the graph
+places the prompt beside its transitions; transition targets navigate directly
+to their state and use that destination state's colour. Charts use the dark
+theme by default; `--theme light` produces the corresponding light palette.
 
 ## Output
 
 Human terminal output is a concise timed transition log with functional pastel
 colours. Redirected output is plain. `NO_COLOR` disables colour explicitly.
+Elapsed stamps omit seconds and leading zero units, growing from `[     5m]` to
+`[ 3h 14m]` and `[1d  0h 17m]` as needed.
+Wait events show their deadline in the CLI's local timezone followed by a
+compact duration, for example `16:13 on Sep 1 (2h 30m)`.
 
 `--json` emits JSON Lines on stdout and keeps diagnostics on stderr. Its final
 event includes the flow, state, phase, exit code, scratchpad, thread, elapsed
 time, and whether the run can be resumed. This is the stable interface for
 scripts, parent flows, remote runners, and agents.
 
+While a Flow process is live, the same structured events are appended to its
+existing `<scratchpad>.lock` file. `flow watch SCRATCHPAD` replays that
+invocation's output and follows new events. On a TTY, `q`, Escape, or left arrow
+detaches the watcher without signalling the Flow. `--json` emits the replayed
+events as JSON Lines. The lock journal is deleted when the process exits and is
+never required to inspect or resume the scratchpad; detached launchers may keep
+their separately redirected JSONL output for later replay.
+
 ```bash
 flow --json review-pr.flow --pr 1234
 ```
 
-Flow may print a clipped one-line summary of visible agent activity at most
-once per minute. It does not print private reasoning.
+Flow uses one lazy, ephemeral `gpt-5.6-luna` thread to assess user-visible
+agent commentary for useful activity updates. Luna is called only after the
+main Codex thread completes new public commentary, and no more than once per
+minute; the interval is a rate ceiling, not a heartbeat. It sees the fresh
+text, limited recent context, the run objective and arguments, the current
+state's transition criteria, and the last few published summaries. It emits
+only standalone updates that materially change what an observer should
+understand about progress, risk, blockers, or required action. New technical
+or administrative facts are not sufficient by themselves, and silence is
+preferred to a cryptic summary. Human summaries are limited to 100 characters
+and clipped further to terminal width; secret-like argument values are
+redacted, and an overlong Luna result is discarded rather than truncated. JSON
+activity events use
+`source: "luna-summary"`. Summarization failures and late results are discarded
+and cannot affect Flow state or exit status. Private reasoning is never sent or
+printed.
 
 ## Exit codes
 
@@ -209,11 +284,14 @@ process table and their scratchpad headers:
 flow ps
 flow ps --json
 flow top
+flow watch SCRATCHPAD
 ```
 
-`flow top` uses an alternate terminal screen and refreshes in place. Press `q`
-or Escape to quit. Discovery is host-local and intentionally omits completed
-flows.
+`flow top` uses an alternate terminal screen and refreshes in place. Use up and
+down arrows to select a flow, then Enter or right arrow to open its live output.
+In the watch view, up/down scroll and left arrow or Escape returns to the list;
+`q` quits from either view. Selection is preserved across refreshes. Discovery
+is host-local and intentionally omits completed flows.
 
 ## Catalog
 

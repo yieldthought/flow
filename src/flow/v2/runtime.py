@@ -181,7 +181,13 @@ class FlowRuntime:
             state=state,
             output_schema=output_schema,
             on_activity=(
-                None if kind == "decision" else lambda text: self.reporter.activity(text, state=state.name)
+                None
+                if kind == "decision"
+                else lambda text: self.reporter.activity(
+                    text,
+                    state=state.name,
+                    source="luna-summary",
+                )
             ),
             on_started=started,
         )
@@ -284,9 +290,8 @@ class FlowRuntime:
             request_id="",
         )
         self.reporter.emit("needs_help", reason=reason, state=self.metadata["state"])
-        thread = str(self.metadata.get("thread") or "")
-        if thread:
-            self.reporter.diagnostic(f"codex resume {shlex.quote(thread)}")
+        if self.metadata.get("thread"):
+            self.reporter.diagnostic(f"flow chat {shlex.quote(self.scratchpad)}")
         self.reporter.diagnostic(f"flow resume {shlex.quote(self.scratchpad)}")
         self._emit_final(EX_NEEDS_HELP, resumable=True)
         return EX_NEEDS_HELP

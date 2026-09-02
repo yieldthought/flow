@@ -2,6 +2,7 @@
 flow:
   name: agi-watcher
   version: 2
+  thinking: xhigh
   mode: workspace-write
   args:
     site:
@@ -9,7 +10,6 @@ flow:
 
 check-news:
   start: true
-  thinking: low
   prompt: Check {{site}} to see if there is a story about AGI being achieved.
   transitions:
     - if: there is credible news that AGI has been achieved
@@ -19,7 +19,6 @@ check-news:
       go: check-news
 
 investigate:
-  thinking: xhigh
   prompt: |
     Read the article, comments, and any sources you can find.
     Decide whether AGI really has been achieved or if this is just hype.

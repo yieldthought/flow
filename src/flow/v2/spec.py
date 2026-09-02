@@ -73,6 +73,7 @@ class FlowSpec:
     source_path: str
     digest: str
     placeholders: tuple[str, ...] = field(default_factory=tuple)
+    argument_values: dict[str, str] = field(default_factory=dict)
 
     @property
     def start_state(self) -> str:
@@ -314,6 +315,7 @@ def render_flow(flow: FlowSpec, values: dict[str, str], cwd: str) -> FlowSpec:
         description=_render_optional(flow.description, values),
         path=cwd,
         states=rendered_states,
+        argument_values=dict(values),
     )
 
 
@@ -322,7 +324,7 @@ def _parse_state(name: str, raw: dict[str, Any]) -> StateSpec:
     if not isinstance(start, bool):
         raise ValueError(f"state '{name}' start must be a boolean")
     if "end" in raw:
-        raise ValueError(f"state '{name}' uses V1 'end'; use 'exit: N' in Flow 2.0")
+        raise ValueError(f"state '{name}' uses V1 'end'; use 'exit: N' in Flow")
     exit_code = raw.get("exit")
     if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
         raise ValueError(f"state '{name}' exit must be an integer")

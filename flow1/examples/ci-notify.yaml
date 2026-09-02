@@ -1,11 +1,11 @@
 flow:
   name: ci-notify
+  thinking: xhigh
   args:
     run_url:
       help: GitHub Actions run URL
 
 check:
-  thinking: low
   start: true
   prompt: |
     Inspect the CI run at {{run_url}}.
@@ -25,7 +25,6 @@ notify-pass:
     - go: done
 
 investigate:
-  thinking: xhigh
   prompt: |
     Investigate the failure and send a very concise report via pushover.
   transitions:

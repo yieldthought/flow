@@ -13,6 +13,7 @@ from flow.v2.scratchpad import (
     read_scratchpad,
     repair_scratchpad,
 )
+from flow.v2.watch import EventJournal
 
 
 def metadata(tmp_path: Path) -> dict[str, object]:
@@ -52,6 +53,35 @@ def test_scratchpad_lock_refuses_a_second_live_runner(tmp_path: Path) -> None:
             with ScratchpadLock(path):
                 pass
     assert not Path(f"{path}.lock").exists()
+
+
+def test_scratchpad_lock_is_an_ephemeral_event_journal(tmp_path: Path) -> None:
+    path = tmp_path / "flow-demo-1.md"
+    create_scratchpad(path, metadata(tmp_path))
+    with ScratchpadLock(path) as lock:
+        lock.append_event({"event": "state", "elapsed_seconds": 1.0, "state": "start"})
+        with EventJournal(path) as journal:
+            assert journal.poll() == [{"event": "state", "elapsed_seconds": 1.0, "state": "start"}]
+            lock.append_event({"event": "final", "elapsed_seconds": 2.0, "state": "done", "exit_code": 0})
+            assert journal.poll() == [{"event": "final", "elapsed_seconds": 2.0, "state": "done", "exit_code": 0}]
+            assert journal.final_event is not None
+            assert journal.live is True
+    assert not Path(f"{path}.lock").exists()
+
+
+def test_event_journal_detects_a_replacement_lock_file(tmp_path: Path) -> None:
+    path = tmp_path / "flow-demo-1.md"
+    create_scratchpad(path, metadata(tmp_path))
+    journal = EventJournal(path)
+    try:
+        with ScratchpadLock(path) as lock:
+            lock.append_event({"event": "state", "state": "start"})
+            journal.poll()
+            assert journal.live_journal_closed is False
+        with ScratchpadLock(path):
+            assert journal.live_journal_closed is True
+    finally:
+        journal.close()
 
 
 def test_default_scratchpad_uses_one_based_disambiguation(tmp_path: Path) -> None:

@@ -144,10 +144,12 @@ def test_runtime_returns_authored_terminal_exit_and_stable_final_event(tmp_path:
     assert final["resumable"] is False
     assert metadata["status"] == "completed"
     assert len(backend.prompts) == 2
-    assert len([event for event in events if event["event"] == "activity"]) == 1
+    activity = [event for event in events if event["event"] == "activity"]
+    assert len(activity) == 1
+    assert activity[0]["source"] == "luna-summary"
 
 
-def test_needs_help_is_resumable_and_prints_both_resume_commands(tmp_path: Path) -> None:
+def test_needs_help_is_resumable_and_prints_chat_and_resume_commands(tmp_path: Path) -> None:
     backend = ScriptedBackend([("needs-help", "credentials are required")])
     runtime, path, output, errors = runtime_setup(tmp_path, backend)
 
@@ -159,7 +161,7 @@ def test_needs_help_is_resumable_and_prints_both_resume_commands(tmp_path: Path)
     assert final["resumable"] is True
     assert metadata["phase"] == "evaluate"
     assert metadata["thread"] == "thread-v2"
-    assert "codex resume thread-v2" in errors.getvalue()
+    assert f"flow chat {path}" in errors.getvalue()
     assert f"flow resume {path}" in errors.getvalue()
 
 

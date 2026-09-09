@@ -105,19 +105,14 @@ A state supports:
 - `prompt`: work to send to Codex
 - `wait`: delay before the state runs, such as `30s`, `10m`, or `2h`
 - `mode` and `fast`: optional per-state overrides
-- `thinking`: accepted as a compatibility override, but discouraged; new and
-  maintained flows should set one reasoning effort in the top-level `flow:`
-  block and leave it unchanged across states
+- `thinking`: optional per-state reasoning effort override; defaults to the
+  value in the top-level `flow:` block
 - `transitions`: ordered `if` / `wait` / `go` routes to other states
 - `exit: N`: makes the state terminal and defines its process exit code
 
 Every non-terminal state needs a prompt and at least one transition. A terminal
 state uses `exit: N`, cannot have transitions, and may omit its prompt to exit
 immediately. Flow-authored exit codes are 0 through 63.
-
-Changing reasoning effort between turns invalidates the OpenAI model's reusable
-prefill cache and usually increases total cost, even when a terminal or polling
-state appears simple. Choose the budget for the workflow as a whole.
 
 Validate before running:
 

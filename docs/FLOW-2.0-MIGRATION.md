@@ -52,10 +52,8 @@ The important schema changes are:
   background agent
 
 Most `flow:`, state prompt, transition, wait, argument, model, mode, and fast
-fields port directly. Move any state-level `thinking` values to one
-top-level `flow.thinking` choice and remove the overrides. Switching reasoning
-effort between turns invalidates the OpenAI model's reusable prefill cache and
-usually increases total cost.
+fields port directly, including state-level `thinking` overrides. Set a
+top-level `flow.thinking` default and retain overrides where useful.
 
 Before:
 

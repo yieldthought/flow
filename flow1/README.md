@@ -210,9 +210,7 @@ State fields:
 - `wait`: default delay before the state runs (optional)
 - `prompt`: text sent to the agent on entry (optional; promptless non-end states move directly to transition questions, and promptless end states finish immediately)
 - `mode`: per-state mode override (optional default set in `flow:` header)
-- `thinking`: legacy per-state override; keep one value in the `flow:` header
-  instead, because switching reasoning effort between turns invalidates the
-  OpenAI model's reusable prefill cache and usually increases total cost
+- `thinking`: per-state reasoning effort override, defaulting to the `flow:` header
 - `fast`: per-state fast mode override (optional, default set in `flow:` header)
 - `transitions`: list of outgoing transitions (required unless `end: true`, and forbidden on end states)
 

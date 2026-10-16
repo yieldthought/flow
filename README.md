@@ -209,6 +209,13 @@ places the prompt beside its transitions; transition targets navigate directly
 to their state and use that destination state's colour. Charts use the dark
 theme by default; `--theme light` produces the corresponding light palette.
 
+## Editing flows
+
+[Eddy](https://github.com/yieldthought/Eddy) is a native macOS editor for
+`.flow` files. It highlights states, transitions, and `{{arguments}}`, runs
+`flow validate` as you type, and draws a live chart beside the text using the
+same state colours as `flow chart`.
+
 ## Output
 
 Human terminal output is a concise timed transition log with functional pastel

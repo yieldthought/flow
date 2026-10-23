@@ -186,7 +186,6 @@ def _resume(argv: list[str]) -> int:
                     process_started_at=None,
                     turn_id="",
                     turn_kind="",
-                    request_id="",
                     ended_at="",
                     last_outcome=f"manually restarted from {previous_state} at {args.state}",
                     last_error="",

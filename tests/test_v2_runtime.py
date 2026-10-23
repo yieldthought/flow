@@ -3,16 +3,17 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import re
 import signal
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from flow.v2.backend import AgentBackend, BackendTurn
-from flow.v2.constants import EX_NEEDS_HELP, EX_SIGINT
+from flow.v2.constants import EX_NEEDS_HELP, EX_RUNTIME, EX_SIGINT
 from flow.v2.output import Reporter
 from flow.v2.runtime import FlowRuntime
-from flow.v2.scratchpad import create_scratchpad, new_metadata, read_scratchpad
+from flow.v2.scratchpad import create_scratchpad, new_metadata, read_scratchpad, repair_scratchpad
 from flow.v2.spec import load_flow, render_flow
 
 
@@ -44,12 +45,13 @@ class ScriptedBackend(AgentBackend):
             on_activity("Made visible progress on the requested state.")
         if output_schema is None:
             return BackendTurn(turn_id, "completed", "work complete")
-        request_id = re.search(r"Set request_id to exactly: ([^\n]+)", prompt).group(1)  # type: ignore[union-attr]
+        assert "request_id" not in prompt
+        assert set(output_schema["properties"]) == {"choice", "reason"}
         choice, reason = self.decisions.pop(0)
         return BackendTurn(
             turn_id,
             "completed",
-            json.dumps({"request_id": request_id, "choice": choice, "reason": reason}),
+            json.dumps({"choice": choice, "reason": reason}),
         )
 
     async def recover_turn(self, turn_id: str) -> BackendTurn | None:
@@ -163,6 +165,64 @@ def test_needs_help_is_resumable_and_prints_chat_and_resume_commands(tmp_path: P
     assert metadata["thread"] == "thread-v2"
     assert f"flow chat {path}" in errors.getvalue()
     assert f"flow resume {path}" in errors.getvalue()
+
+
+@pytest.mark.parametrize("legacy_request_id", [None, "incorrectly-copied-id"])
+def test_resume_consumes_recorded_decision_without_an_echoed_id(
+    tmp_path: Path, legacy_request_id: str | None
+) -> None:
+    class RecordedBackend(ScriptedBackend):
+        async def recover_turn(self, turn_id: str) -> BackendTurn | None:
+            assert turn_id == "recorded-decision-turn"
+            payload = {"choice": "done", "reason": "work complete"}
+            if legacy_request_id is not None:
+                payload["request_id"] = legacy_request_id
+            return BackendTurn(turn_id, "completed", json.dumps(payload))
+
+    backend = RecordedBackend([])
+    runtime, path, output, _ = runtime_setup(tmp_path, backend)
+    runtime.metadata.update(
+        thread="thread-v2",
+        phase="decision_turn",
+        status="error",
+        turn_id="recorded-decision-turn",
+        turn_kind="decision",
+        request_id="original-request-id",
+    )
+    repair_scratchpad(path, runtime.metadata)
+    metadata, _ = read_scratchpad(path)
+    resumed = FlowRuntime(runtime.flow, path, metadata, backend=backend, reporter=runtime.reporter)
+
+    assert asyncio.run(resumed.run()) == 7
+
+    metadata, _ = read_scratchpad(path)
+    events = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert backend.prompts == []
+    assert metadata["status"] == "completed"
+    assert metadata["turn_id"] == ""
+    assert "request_id" not in metadata
+    assert events[0]["resumed"] is True
+
+
+@pytest.mark.parametrize(
+    ("choice", "reason", "error"),
+    [
+        ("missing-state", "complete", "unknown transition 'missing-state'"),
+        ("done", "", "non-empty choice and reason strings"),
+    ],
+)
+def test_invalid_decision_does_not_advance_state(
+    tmp_path: Path, choice: str, reason: str, error: str
+) -> None:
+    runtime, path, _, _ = runtime_setup(tmp_path, ScriptedBackend([(choice, reason)]))
+
+    assert asyncio.run(runtime.run()) == EX_RUNTIME
+
+    metadata, _ = read_scratchpad(path)
+    assert metadata["state"] == "work"
+    assert error in metadata["last_error"]
+    assert metadata["resumable"] is True
+    assert "request_id" not in metadata
 
 
 def test_sigint_interrupts_active_turn_without_starting_another_prompt(tmp_path: Path) -> None:

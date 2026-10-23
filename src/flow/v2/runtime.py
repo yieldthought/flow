@@ -52,6 +52,8 @@ class FlowRuntime:
         self._managed_pids: set[int] = set()
 
     async def run(self) -> int:
+        # Discard the obsolete model-echoed ID when loading older checkpoints.
+        self.metadata.pop("request_id", None)
         mark_process(self.metadata)
         self._checkpoint(last_error="")
         self._install_signal_handlers()
@@ -142,8 +144,8 @@ class FlowRuntime:
                 continue
 
             if phase in {"evaluate", "decision_pending"}:
-                prompt, request_id = decision_prompt(self.flow, state, self.scratchpad)
-                self._checkpoint(phase="decision_pending", request_id=request_id)
+                prompt = decision_prompt(self.flow, state, self.scratchpad)
+                self._checkpoint(phase="decision_pending")
                 turn = await self._run_turn(
                     prompt,
                     state,
@@ -152,7 +154,7 @@ class FlowRuntime:
                 )
                 self._require_completed(turn, state)
                 self._raise_if_stopping()
-                decision = parse_decision(turn.final_response, request_id)
+                decision = parse_decision(turn.final_response)
                 outcome = self._apply_decision(state, decision)
                 if outcome is not None:
                     return outcome
@@ -210,8 +212,7 @@ class FlowRuntime:
             return None
         self._require_completed(recovered, self._state())
         if phase == "decision_turn":
-            request_id = str(self.metadata.get("request_id") or "")
-            decision = parse_decision(recovered.final_response, request_id)
+            decision = parse_decision(recovered.final_response)
             return self._apply_decision(self._state(), decision)
         else:
             self._checkpoint(phase="evaluate", turn_id="", turn_kind="")
@@ -226,7 +227,6 @@ class FlowRuntime:
                 phase="continue_pending",
                 turn_id="",
                 turn_kind="",
-                request_id="",
                 last_outcome=decision.reason,
             )
             return None
@@ -250,7 +250,6 @@ class FlowRuntime:
             phase="enter_state",
             turn_id="",
             turn_kind="",
-            request_id="",
             ready_at="",
             last_outcome=decision.reason,
         )
@@ -270,7 +269,6 @@ class FlowRuntime:
             last_error="",
             turn_id="",
             turn_kind="",
-            request_id="",
             ready_at="",
         )
         self._emit_final(exit_code, resumable=False)
@@ -287,7 +285,6 @@ class FlowRuntime:
             last_error=reason,
             turn_id="",
             turn_kind="",
-            request_id="",
         )
         self.reporter.emit("needs_help", reason=reason, state=self.metadata["state"])
         if self.metadata.get("thread"):

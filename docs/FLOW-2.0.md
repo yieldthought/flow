@@ -91,6 +91,10 @@ state, and Codex thread. It refuses a live lock, a changed flow digest, or a
 different host/`CODEX_HOME` by default. `flow inspect SCRATCHPAD --json` reads a
 completed or stopped run without maintaining a completed-run registry.
 
+Transition responses contain only `choice` and `reason`. Flow correlates them
+through the SDK turn handle and the recorded turn ID on resume; the agent does
+not need to copy an identifier. Older checkpoint request IDs are ignored.
+
 `flow resume SCRATCHPAD --state STATE` deliberately redirects a stopped or
 completed checkpoint to a named state while preserving the scratchpad body,
 arguments, and Codex thread. It clears previous terminal, wait, turn, and

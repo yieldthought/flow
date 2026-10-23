@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from dataclasses import dataclass
 
 from .constants import IMPLICIT_FINISH, IMPLICIT_KEEP_WORKING, IMPLICIT_NEEDS_HELP
@@ -12,11 +11,10 @@ from .spec import FlowSpec, StateSpec
 DECISION_SCHEMA = {
     "type": "object",
     "properties": {
-        "request_id": {"type": "string"},
         "choice": {"type": "string"},
         "reason": {"type": "string"},
     },
-    "required": ["request_id", "choice", "reason"],
+    "required": ["choice", "reason"],
     "additionalProperties": False,
 }
 
@@ -25,7 +23,6 @@ DECISION_SCHEMA = {
 class Decision:
     choice: str
     reason: str
-    request_id: str
 
 
 def state_prompt(flow: FlowSpec, state: StateSpec, scratchpad: str) -> str:
@@ -49,8 +46,7 @@ def continue_prompt(flow: FlowSpec, state: StateSpec, scratchpad: str) -> str:
     )
 
 
-def decision_prompt(flow: FlowSpec, state: StateSpec, scratchpad: str) -> tuple[str, str]:
-    request_id = str(uuid.uuid4())
+def decision_prompt(flow: FlowSpec, state: StateSpec, scratchpad: str) -> str:
     lines = [
         f"Evaluate Flow '{flow.name}' state '{state.name}'.",
         f"Scratchpad: {scratchpad}",
@@ -80,22 +76,20 @@ def decision_prompt(flow: FlowSpec, state: StateSpec, scratchpad: str) -> tuple[
                 f"- {IMPLICIT_NEEDS_HELP}: human input or intervention is required.",
             ]
         )
-    lines.extend(["", f"Set request_id to exactly: {request_id}"])
-    return "\n".join(lines), request_id
+    return "\n".join(lines)
 
 
-def parse_decision(text: str, request_id: str) -> Decision:
+def parse_decision(text: str) -> Decision:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Codex returned invalid transition JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("Codex transition response must be a JSON object")
-    response_id = str(payload.get("request_id") or "")
-    if response_id != request_id:
-        raise ValueError("Codex transition response has the wrong request_id")
-    choice = str(payload.get("choice") or "").strip()
-    reason = str(payload.get("reason") or "").strip()
-    if not choice or not reason:
-        raise ValueError("Codex transition response must include choice and reason")
-    return Decision(choice=choice, reason=reason, request_id=response_id)
+    # Older checkpoints can recover responses containing request_id. The SDK
+    # turn handle (or recorded turn ID on resume) already identifies the response.
+    choice = payload.get("choice")
+    reason = payload.get("reason")
+    if not isinstance(choice, str) or not isinstance(reason, str) or not choice.strip() or not reason.strip():
+        raise ValueError("Codex transition response must include non-empty choice and reason strings")
+    return Decision(choice=choice.strip(), reason=reason.strip())

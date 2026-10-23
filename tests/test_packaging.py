@@ -21,7 +21,7 @@ def test_public_commands_route_to_current_and_compatibility_runtimes() -> None:
         "flow": "flow.v2.cli:main",
         "flow1": "flow.cli:main",
     }
-    assert package.version == flow.__version__ == "2.1.1"
+    assert package.version == flow.__version__ == "2.1.2"
 
 
 def test_flow_2_examples_use_the_canonical_shebang() -> None:
